@@ -193,7 +193,10 @@ mod tests {
     fn renews_before_expiry_not_after() {
         let tokens = tokens_expiring_at(1_000 + HOUR);
 
-        assert!(!tokens.needs_refresh(1_000), "fresh token should not renew yet");
+        assert!(
+            !tokens.needs_refresh(1_000),
+            "fresh token should not renew yet"
+        );
         // Five minutes out, renewal is due.
         assert!(tokens.needs_refresh(1_000 + HOUR - 299));
     }
@@ -261,7 +264,10 @@ mod tests {
         store.refresh_failed(1_000, false);
 
         assert_eq!(store.access_token(1_000), Some("access"));
-        assert!(matches!(store.state(1_000), AuthState::Ready | AuthState::Refreshing));
+        assert!(matches!(
+            store.state(1_000),
+            AuthState::Ready | AuthState::Refreshing
+        ));
     }
 
     #[test]

@@ -171,8 +171,8 @@ fn design_lowpass(cutoff: f32) -> Vec<f32> {
             (2.0 * cutoff * x).sin() / x
         };
 
-        let window = 0.5
-            - 0.5 * (2.0 * std::f32::consts::PI * index as f32 / (length - 1) as f32).cos();
+        let window =
+            0.5 - 0.5 * (2.0 * std::f32::consts::PI * index as f32 / (length - 1) as f32).cos();
 
         taps.push(sinc * window);
     }
@@ -259,7 +259,11 @@ mod tests {
         );
 
         // And it should still be roughly as loud as it went in.
-        assert!(rms(&output) > 0.25, "tone was attenuated: rms {}", rms(&output));
+        assert!(
+            rms(&output) > 0.25,
+            "tone was attenuated: rms {}",
+            rms(&output)
+        );
     }
 
     #[test]
@@ -307,10 +311,7 @@ mod tests {
 
         assert_eq!(single.len(), pieces.len());
         for (index, (a, b)) in single.iter().zip(&pieces).enumerate() {
-            assert!(
-                (a - b).abs() <= 1,
-                "sample {index} differs: {a} vs {b}"
-            );
+            assert!((a - b).abs() <= 1, "sample {index} differs: {a} vs {b}");
         }
     }
 

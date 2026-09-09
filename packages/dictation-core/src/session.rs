@@ -45,12 +45,17 @@ pub enum Event {
     /// The server accepted the session.
     Ready,
     /// A final transcript and cleaned text arrived.
-    Result { text: String },
+    Result {
+        text: String,
+    },
     /// The user pressed Escape.
     Cancel,
     /// The injector finished.
     Injected,
-    Failed { code: ErrorCode, message: String },
+    Failed {
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 /// What the caller should do about a transition.
@@ -106,7 +111,9 @@ impl Session {
         match (&self.state, event) {
             // --- starting ---
             (State::Idle | State::Failed { .. }, Event::HotkeyDown) => {
-                self.state = State::Arming { stop_pending: false };
+                self.state = State::Arming {
+                    stop_pending: false,
+                };
                 vec![Action::OpenSocket]
             }
 
@@ -209,7 +216,9 @@ mod tests {
 
         assert_eq!(
             session.handle(result("The weld looks good.")),
-            vec![Action::Inject { text: "The weld looks good.".into() }],
+            vec![Action::Inject {
+                text: "The weld looks good.".into()
+            }],
         );
 
         assert_eq!(session.handle(Event::Injected), vec![Action::Teardown]);
@@ -234,7 +243,9 @@ mod tests {
 
         assert_eq!(
             session.handle(result("quick note")),
-            vec![Action::Inject { text: "quick note".into() }],
+            vec![Action::Inject {
+                text: "quick note".into()
+            }],
         );
     }
 
@@ -323,7 +334,9 @@ mod tests {
             actions,
             vec![
                 Action::Teardown,
-                Action::Notify { message: "Monthly limit reached".into() },
+                Action::Notify {
+                    message: "Monthly limit reached".into()
+                },
             ],
         );
 

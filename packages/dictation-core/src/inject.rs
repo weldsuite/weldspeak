@@ -144,7 +144,10 @@ mod tests {
         let plan = plan(&text_of(TYPING_LENGTH_LIMIT + 1), Preference::Automatic);
 
         assert_eq!(plan.method, Method::Paste);
-        assert!(plan.preserve_clipboard, "the user's clipboard must be restored");
+        assert!(
+            plan.preserve_clipboard,
+            "the user's clipboard must be restored"
+        );
     }
 
     #[test]
@@ -152,7 +155,10 @@ mod tests {
         // Accented characters and emoji are multi-byte; counting bytes would
         // switch to pasting far earlier than intended for non-English dictation.
         let accented = "é".repeat(TYPING_LENGTH_LIMIT - 1);
-        assert!(accented.len() > TYPING_LENGTH_LIMIT, "precondition: multi-byte");
+        assert!(
+            accented.len() > TYPING_LENGTH_LIMIT,
+            "precondition: multi-byte"
+        );
 
         assert_eq!(plan(&accented, Preference::Automatic).method, Method::Type);
     }
