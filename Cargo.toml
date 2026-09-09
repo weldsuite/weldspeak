@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/protocol-rs"]
+members = ["packages/protocol-rs", "packages/dictation-core"]
 resolver = "2"
 
 [workspace.package]
