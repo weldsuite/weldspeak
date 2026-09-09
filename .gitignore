@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+target/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.log
+.DS_Store
+.vite/
+coverage/
+apps/desktop/src-tauri/gen/
+apps/web/dist/

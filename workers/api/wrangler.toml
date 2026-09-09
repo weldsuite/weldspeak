@@ -1,0 +1,46 @@
+name = "weldspeak-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The web dashboard is served from the same Worker as the API. One deployment
+# target, and the browser talks to the API same-origin, so there is no CORS
+# preflight on the device-approval path.
+[assets]
+directory = "../../apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "weldspeak"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+# Pending device authorizations. KV rather than D1 because these are
+# write-once, read-a-few-times, and expire on their own after ten minutes.
+[[kv_namespaces]]
+binding = "DEVICE_CODES"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+[[durable_objects.bindings]]
+name = "DICTATION"
+class_name = "DictationSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DictationSession"]
+
+[vars]
+APP_URL = "http://localhost:5173"
+CLEANUP_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+STT_MODEL = "@cf/deepgram/nova-3"
+
+# Secrets — set with `wrangler secret put <NAME>`, never committed:
+#   CLERK_SECRET_KEY        Clerk backend API key (sk_...)
+#   CLERK_PUBLISHABLE_KEY   Clerk publishable key (pk_...), used to derive the JWKS issuer
+#   CLERK_WEBHOOK_SECRET    Svix signing secret for the Clerk webhook
+#   TOKEN_SIGNING_KEY       Random 32+ byte secret used to sign WeldSpeak access tokens
