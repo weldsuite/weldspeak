@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  javascript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The Worker's assets binding points at the dashboard build, so the web
+      # app is built before anything that loads wrangler config.
+      - run: pnpm --filter @weldspeak/web build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: pk_test_ci
+
+      - run: pnpm --filter @weldspeak/api typecheck
+      - run: pnpm --filter @weldspeak/api test
+      - run: pnpm --filter @weldspeak/desktop-ui build
+
+  rust:
+    name: Rust (portable crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      # The desktop crate needs a GUI toolchain; the portable crates carry the
+      # logic worth testing and build anywhere.
+      - run: cargo fmt --check -p weldspeak-protocol -p weldspeak-core
+      - run: cargo clippy -p weldspeak-protocol -p weldspeak-core --all-targets -- -D warnings
+      - run: cargo test -p weldspeak-protocol -p weldspeak-core
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @weldspeak/desktop-ui build
+
+      # Both platforms are built on every PR. The injection code is entirely
+      # cfg-gated, so a change that compiles on one can fail on the other, and
+      # finding that out at release time is the expensive way.
+      - run: cargo clippy -p weldspeak-desktop --all-targets -- -D warnings
+      - run: cargo test -p weldspeak-desktop
