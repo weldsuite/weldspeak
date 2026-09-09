@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/protocol-rs", "packages/dictation-core"]
+members = ["packages/protocol-rs", "packages/dictation-core", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]

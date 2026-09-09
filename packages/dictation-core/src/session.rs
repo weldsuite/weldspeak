@@ -17,9 +17,10 @@
 use weldspeak_protocol::ErrorCode;
 
 /// Where a dictation currently is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum State {
     /// Nothing happening. The microphone is still open, filling the pre-roll.
+    #[default]
     Idle,
     /// Hotkey down; opening the socket and waiting for `ready`.
     Arming {
@@ -75,12 +76,6 @@ pub enum Action {
 #[derive(Debug, Default)]
 pub struct Session {
     state: State,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        State::Idle
-    }
 }
 
 impl Session {

@@ -201,10 +201,8 @@ mod tests {
         assert!(matches!(fallback, Fallback::Inject(_)));
     }
 
-    #[test]
-    fn clipboard_restore_waits_longer_than_the_paste_itself() {
-        // Restoring before the paste lands puts the old clipboard into the
-        // user's document instead of their dictation.
-        assert!(CLIPBOARD_RESTORE_MS > CLIPBOARD_SETTLE_MS);
-    }
+    /// Restoring before the paste lands puts the old clipboard into the user's
+    /// document instead of their dictation. Checked at compile time so the
+    /// ordering cannot be broken by editing either constant.
+    const _: () = assert!(CLIPBOARD_RESTORE_MS > CLIPBOARD_SETTLE_MS);
 }

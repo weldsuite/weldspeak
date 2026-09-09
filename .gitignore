@@ -12,3 +12,4 @@ target/
 coverage/
 apps/desktop/src-tauri/gen/
 apps/web/dist/
+apps/desktop/dist/

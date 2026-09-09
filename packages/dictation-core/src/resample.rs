@@ -86,7 +86,7 @@ impl Resampler {
     /// Without this the final `HALF_TAPS` input samples never produce output and
     /// the last few milliseconds — often the end of the final word — are lost.
     pub fn flush(&mut self) -> Vec<i16> {
-        self.history.extend(std::iter::repeat(0.0).take(HALF_TAPS));
+        self.history.extend(std::iter::repeat_n(0.0, HALF_TAPS));
         let tail = self.push(&[]);
         self.reset();
         tail
