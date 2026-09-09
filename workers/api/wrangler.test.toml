@@ -1,0 +1,31 @@
+# Test-only Worker config.
+#
+# Differs from wrangler.toml in two deliberate ways:
+#
+#   - No [ai] binding. Workers AI has no local implementation, so wrangler
+#     proxies it to the real API and demands credentials. Tests that exercise
+#     inference pass their own fake `AI` instead (see test/format.test.ts),
+#     which keeps the suite hermetic and free.
+#   - No [assets] binding, so the suite does not depend on a built dashboard.
+name = "weldspeak-api-test"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "weldspeak-test"
+database_id = "test"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "DEVICE_CODES"
+id = "test"
+
+[[durable_objects.bindings]]
+name = "DICTATION"
+class_name = "DictationSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DictationSession"]
