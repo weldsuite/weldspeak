@@ -1,24 +1,34 @@
 //! Global hotkeys, including push-to-talk.
 //!
-//! Two modes, and they need different machinery.
+//! Tauri's global-shortcut plugin is built on `RegisterHotKey` / `CGEvent`,
+//! which do not reliably report a **modifier held on its own** (Right Ctrl,
+//! Right Option). Those are exactly the keys a dictation app should use, so
+//! push-to-talk is observed through a platform hook instead: `WH_KEYBOARD_LL`
+//! on Windows, `NSEvent` monitors on macOS.
 //!
-//! **Toggle** — press once to start, again to stop — is a plain global
-//! shortcut, and `tauri-plugin-global-shortcut` handles it on both platforms.
-//!
-//! **Push-to-talk** — hold to dictate — needs key *down* and *up* separately,
-//! which that plugin does not expose. So it goes through a platform hook:
-//! `WH_KEYBOARD_LL` on Windows, `NSEvent`'s global monitor on macOS.
-//!
-//! A note on defaults, since this is where dictation apps disappoint people:
-//! holding **Fn** is the gesture everyone asks for, and on macOS it is the one
-//! key a normal event tap does not deliver. Fn arrives as a modifier flag on
-//! `flagsChanged` rather than as a key event, and on recent hardware it is
-//! partly claimed by the system. Rather than promising it and shipping
-//! something flaky, the defaults are Right Option on macOS and Right Ctrl on
-//! Windows — both unused by almost everything, both reliably observable — and
-//! the binding is configurable.
+//! A note on defaults: holding **Fn** is the gesture everyone asks for, and on
+//! macOS it is the one key a normal event tap does not deliver. The defaults
+//! are Right Option on macOS and Right Ctrl on Windows.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering};
+use tauri::AppHandle;
+
+#[cfg(target_os = "windows")]
+#[path = "hotkey_windows.rs"]
+mod platform;
+
+#[cfg(target_os = "macos")]
+#[path = "hotkey_macos.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod platform {
+    pub fn install(_app: tauri::AppHandle) {}
+}
+
+/// Encoded `PttKey` observed by the platform hook. 0 means none yet.
+static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 /// How the hotkey behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,6 +105,59 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A single key the user can hold to talk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PttKey {
+    ControlRight = 1,
+    ControlLeft = 2,
+    AltRight = 3,
+    AltLeft = 4,
+    F8 = 5,
+    F13 = 6,
+}
+
+impl PttKey {
+    pub fn parse(accelerator: &str) -> Option<Self> {
+        match accelerator.trim() {
+            "ControlRight" | "CtrlRight" => Some(Self::ControlRight),
+            "ControlLeft" | "CtrlLeft" => Some(Self::ControlLeft),
+            "AltRight" | "OptionRight" => Some(Self::AltRight),
+            "AltLeft" | "OptionLeft" => Some(Self::AltLeft),
+            "F8" => Some(Self::F8),
+            "F13" => Some(Self::F13),
+            _ => None,
+        }
+    }
+
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::ControlRight),
+            2 => Some(Self::ControlLeft),
+            3 => Some(Self::AltRight),
+            4 => Some(Self::AltLeft),
+            5 => Some(Self::F8),
+            6 => Some(Self::F13),
+            _ => None,
+        }
+    }
+}
+
+/// Start the platform hook. Safe to call once, at launch.
+pub fn install(app: &AppHandle) {
+    platform::install(app.clone());
+}
+
+/// Point the hook at the key currently chosen in Settings.
+pub fn listen_for(accelerator: &str) {
+    let code = PttKey::parse(accelerator).map(|key| key as u8).unwrap_or(0);
+    CURRENT.store(code, Ordering::Relaxed);
+}
+
+pub(crate) fn current_key() -> Option<PttKey> {
+    PttKey::from_u8(CURRENT.load(Ordering::Relaxed))
+}
+
 /// Whether an accelerator names a single character-producing key.
 fn is_printable_key(accelerator: &str) -> bool {
     // Combinations are fine; it is a lone printable key that causes trouble.
@@ -145,6 +208,15 @@ mod tests {
     #[test]
     fn rejects_an_empty_binding() {
         assert!(validate_for_push_to_talk("  ").is_err());
+    }
+
+    #[test]
+    fn parses_the_keys_settings_offers() {
+        assert_eq!(PttKey::parse("ControlRight"), Some(PttKey::ControlRight));
+        assert_eq!(PttKey::parse("AltRight"), Some(PttKey::AltRight));
+        assert_eq!(PttKey::parse("F8"), Some(PttKey::F8));
+        assert_eq!(PttKey::parse("F13"), Some(PttKey::F13));
+        assert_eq!(PttKey::parse("CommandOrControl+Space"), None);
     }
 
     #[test]

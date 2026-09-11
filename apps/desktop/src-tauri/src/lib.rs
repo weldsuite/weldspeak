@@ -25,7 +25,7 @@ use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 use tokio::sync::mpsc::UnboundedSender;
 use weldspeak_core::{AuthStore, Session};
 
@@ -160,6 +160,7 @@ pub fn run() {
             }
 
             overlay::prepare(&handle)?;
+            hotkey::install(&handle);
             register_hotkey(&handle)?;
 
             Ok(())
@@ -248,22 +249,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Build the global-shortcut plugin with the dictation handler attached.
-///
-/// The plugin reports press and release separately, which is what push-to-talk
-/// needs. Its coverage of held modifier keys varies by platform — the module
-/// docs in `hotkey.rs` explain why Fn in particular is not offered — so the
-/// defaults are right-hand modifiers that are reliably delivered on both.
+/// The plugin is loaded so its capability stays valid; push-to-talk is
+/// observed by the platform hook in `hotkey.rs`, not by a shortcut handler.
 fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(|app, _shortcut, event| {
-            let app = app.clone();
-            match event.state() {
-                ShortcutState::Pressed => dictation::begin(&app),
-                ShortcutState::Released => dictation::end(&app),
-            }
-        })
-        .build()
+    tauri_plugin_global_shortcut::Builder::new().build()
 }
 
 fn show_settings(app: &AppHandle) {
@@ -279,14 +268,12 @@ fn register_hotkey(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Drop the previous binding and take the one currently in settings.
+/// Point the platform hook at the key currently in settings.
 ///
-/// Called at startup and whenever the user picks a new key. Failures are
-/// surfaced in the overlay rather than aborting: a key another app already
-/// owns is a configuration problem, and Settings has to stay reachable.
+/// The Tauri shortcut plugin is still loaded (other capabilities use it) but
+/// is not how push-to-talk is observed: a modifier held on its own never
+/// arrives through `RegisterHotKey`.
 pub(crate) fn reregister_hotkey(app: &AppHandle) {
-    let _ = app.global_shortcut().unregister_all();
-
     let accelerator = {
         let state = app.state::<AppState>();
         let Ok(settings) = state.settings.lock() else {
@@ -295,13 +282,7 @@ pub(crate) fn reregister_hotkey(app: &AppHandle) {
         settings.hotkey.accelerator.clone()
     };
 
-    if let Err(error) = app.global_shortcut().register(accelerator.as_str()) {
-        tracing::error!(?error, %accelerator, "could not register the dictation hotkey");
-        overlay::show_notice(
-            app,
-            &format!("{accelerator} is already in use. Choose another key in Settings."),
-        );
-    }
+    hotkey::listen_for(&accelerator);
 }
 
 /// Escape cancels a dictation in progress.

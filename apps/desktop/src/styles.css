@@ -37,7 +37,7 @@ body {
    pill is painted. */
 
 body.overlay-window {
-  background: transparent;
+  background: #1a1814;
   overflow: hidden;
   user-select: none;
   /* Clicks pass through to the app underneath: the overlay is feedback, not UI. */
@@ -47,17 +47,17 @@ body.overlay-window {
 .pill {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 8px;
-  padding: 12px 18px;
-  border-radius: 999px;
-  background: rgba(20, 18, 15, 0.92);
+  gap: 14px;
+  margin: 0;
+  height: 64px;
+  padding: 0 22px;
+  border-radius: 0;
+  background: #1a1814;
   color: #f7f4ef;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 500;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity 80ms ease;
 }
 
 .pill[data-phase="listening"],

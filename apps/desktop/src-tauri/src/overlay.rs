@@ -21,6 +21,13 @@ fn set_live(app: &AppHandle, live: bool) {
         .store(live, Ordering::Relaxed);
 }
 
+fn reveal(app: &AppHandle, window: &WebviewWindow) {
+    position_over_cursor(app, window);
+    let _ = window.set_ignore_cursor_events(true);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+}
+
 /// Place the pill on the monitor under the cursor, above the taskbar, and make
 /// it click-through so it cannot steal the user's typing.
 pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
@@ -30,7 +37,6 @@ pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
 
     let _ = window.set_ignore_cursor_events(true);
     position_over_cursor(app, &window);
-    window.show()?;
     spawn_level_ticker(app.clone());
     Ok(())
 }
@@ -39,8 +45,7 @@ pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
 pub fn appear_listening(app: &AppHandle) {
     set_live(app, true);
     if let Some(window) = window(app) {
-        position_over_cursor(app, &window);
-        let _ = window.show();
+        reveal(app, &window);
     }
     let _ = app.emit("weldspeak://listening", ());
 }
@@ -48,15 +53,33 @@ pub fn appear_listening(app: &AppHandle) {
 pub fn show_notice(app: &AppHandle, message: &str) {
     set_live(app, false);
     if let Some(window) = window(app) {
-        position_over_cursor(app, &window);
-        let _ = window.show();
+        reveal(app, &window);
     }
     let _ = app.emit("weldspeak://notice", message);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        if !app
+            .state::<AppState>()
+            .overlay_live
+            .load(Ordering::Relaxed)
+        {
+            hide(&app);
+        }
+    });
 }
 
 pub fn dismiss(app: &AppHandle) {
     set_live(app, false);
     let _ = app.emit("weldspeak://done", ());
+    hide(app);
+}
+
+fn hide(app: &AppHandle) {
+    if let Some(window) = window(app) {
+        let _ = window.hide();
+    }
 }
 
 fn spawn_level_ticker(app: AppHandle) {
@@ -97,6 +120,6 @@ fn position_over_cursor(app: &AppHandle, window: &WebviewWindow) {
     let origin = monitor.position();
     let area = monitor.size();
     let x = origin.x + (area.width as i32 - size.width as i32) / 2;
-    let y = origin.y + area.height as i32 - size.height as i32 - 80;
+    let y = origin.y + area.height as i32 - size.height as i32 - 72;
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
