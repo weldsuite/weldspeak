@@ -19,6 +19,7 @@ pub mod inject;
 pub mod overlay;
 pub mod settings;
 pub mod transport;
+pub mod updater;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -114,6 +115,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(build_shortcut_plugin())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
@@ -162,6 +164,7 @@ pub fn run() {
             overlay::prepare(&handle)?;
             hotkey::install(&handle);
             register_hotkey(&handle)?;
+            updater::spawn(handle.clone());
 
             Ok(())
         })

@@ -159,8 +159,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
-        let mut original = Settings::default();
-        original.keep_history = false;
+        let original = Settings {
+            keep_history: false,
+            ..Settings::default()
+        };
         original.save(&path).unwrap();
 
         let loaded = Settings::load(&path);

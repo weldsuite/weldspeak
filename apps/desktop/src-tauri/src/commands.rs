@@ -256,7 +256,7 @@ fn open_in_browser(url: &str) -> Result<(), String> {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|error| format!("could not open the browser: {error}"))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "macos")]
@@ -265,7 +265,7 @@ fn open_in_browser(url: &str) -> Result<(), String> {
             .arg(url)
             .spawn()
             .map_err(|error| format!("could not open the browser: {error}"))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]

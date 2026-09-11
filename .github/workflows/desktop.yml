@@ -3,6 +3,8 @@
 #
 # Run from the Actions tab (Run workflow) or push a tag like v0.1.0.
 # The .exe / .dmg show up as workflow artifacts. Tags also get a GitHub Release.
+# Pushes to ci/desktop also refresh the rolling `desktop` release that the
+# in-app updater reads.
 
 name: Desktop installers
 
@@ -31,10 +33,14 @@ jobs:
             os: windows-latest
             args: --bundles nsis
             artifact: target/release/bundle/nsis/*.exe
+            updater: target/release/bundle/nsis/*.sig
           - name: macOS
             os: macos-latest
             args: --bundles dmg
             artifact: target/release/bundle/dmg/*.dmg
+            updater: |
+              target/release/bundle/macos/*.tar.gz
+              target/release/bundle/macos/*.sig
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -52,10 +58,36 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Installed copies compare this against latest.json. Each successful
+      # installer run must be a newer semver than 0.1.0.
+      - name: Stamp a unique version
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'apps/desktop/src-tauri/tauri.conf.json';
+            const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+            c.version = '0.1.' + process.env.GITHUB_RUN_NUMBER;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');
+            console.log(c.version);
+          "
+
       # beforeBuildCommand in tauri.conf.json builds the settings UI.
       # `exec` runs the CLI directly so `--bundles` is not swallowed by pnpm
       # or forwarded to cargo (which is what `tauri build -- --bundles` does).
-      - run: pnpm --filter @weldspeak/desktop-ui exec tauri build ${{ matrix.args }}
+      - name: Build installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          extra=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            extra+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set; this build cannot produce auto-updates."
+          fi
+          pnpm --filter @weldspeak/desktop-ui exec tauri build ${{ matrix.args }} "${extra[@]}"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -64,9 +96,33 @@ jobs:
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeldSpeak-${{ matrix.name }}-updater
+          path: ${{ matrix.updater }}
+          if-no-files-found: warn
+
       - name: Attach to GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
           generate_release_notes: true
+
+  publish:
+    name: Rolling updater release
+    needs: bundle
+    if: github.ref == 'refs/heads/ci/desktop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/publish-desktop-update.mjs artifacts

@@ -83,15 +83,16 @@ fn handle(event: &NSEvent) {
     let Some(key) = super::current_key() else {
         return;
     };
-    let key_code = event.keyCode();
+    // SAFETY: the monitor callbacks only fire with a live NSEvent.
+    let key_code = unsafe { event.keyCode() };
     if !key_matches(key_code, key) {
         return;
     }
 
-    let event_type = event.r#type();
+    let event_type = unsafe { event.r#type() };
     if is_modifier(key) {
         if event_type == TYPE_FLAGS_CHANGED {
-            dispatch(modifier_down(key, event.modifierFlags()));
+            dispatch(modifier_down(key, unsafe { event.modifierFlags() }));
         }
         return;
     }

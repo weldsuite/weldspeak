@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::AppHandle;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
@@ -59,7 +59,7 @@ fn dispatch(down: bool) {
         return;
     };
     let app = app.clone();
-    let _ = app.run_on_main_thread(move || {
+    let _ = app.clone().run_on_main_thread(move || {
         if down {
             crate::dictation::begin(&app);
         } else {
@@ -105,7 +105,11 @@ unsafe fn message_loop() {
         }
     };
 
-    let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module.into()), 0) {
+    // The hook lives for the process lifetime; the module handle only has to
+    // remain valid for this call. `Option<&HINSTANCE>` is what windows 0.58
+    // asks for here.
+    let instance = HINSTANCE::from(module);
+    let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(&instance), 0) {
         Ok(hook) => hook,
         Err(error) => {
             tracing::error!(%error, "could not install the push-to-talk hook");

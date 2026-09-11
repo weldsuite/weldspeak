@@ -56,10 +56,24 @@ pub fn show_notice(app: &AppHandle, message: &str) {
         reveal(app, &window);
     }
     let _ = app.emit("weldspeak://notice", message);
+    hide_later(app, Duration::from_secs(4));
+}
 
+/// Same as [`show_notice`], but the pill stays until the caller hides it.
+/// Used while an update is downloading so a 4-second flash is not the last
+/// thing the user sees of the process.
+pub fn show_status(app: &AppHandle, message: &str) {
+    set_live(app, false);
+    if let Some(window) = window(app) {
+        reveal(app, &window);
+    }
+    let _ = app.emit("weldspeak://notice", message);
+}
+
+fn hide_later(app: &AppHandle, after: Duration) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        tokio::time::sleep(after).await;
         if !app
             .state::<AppState>()
             .overlay_live

@@ -5,6 +5,7 @@
  * words the mic should not guess. Everything else stays out of the way.
  */
 
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Settings {
@@ -48,9 +49,10 @@ const HOTKEYS = isMac
     ];
 
 export async function mountSettings(root: HTMLElement): Promise<void> {
-  const [settings, status] = await Promise.all([
+  const [settings, status, version] = await Promise.all([
     invoke<Settings>("get_settings"),
     invoke<Status>("get_status"),
+    getVersion(),
   ]);
 
   const keyOptions = HOTKEYS.some((key) => key.value === settings.hotkey.accelerator)
@@ -107,6 +109,8 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
           </select>
         </label>
       </section>
+
+      <p class="build">WeldSpeak ${escapeHtml(version)} · updates itself</p>
     </main>
   `;
 

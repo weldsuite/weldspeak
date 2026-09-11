@@ -61,5 +61,16 @@
     "windows": {
       "nsis": { "installMode": "currentUser" }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQwRjQ4MzdGRjhERDA2RkUKUldUK0J0MzRmNFAwUUtlNlBoR1BNeTdzL3pNQW9hRWNmOHYzeUkxUnNwSlByU21LcXZVREtGYlgK",
+      "endpoints": [
+        "https://github.com/weldsuite/weldspeak/releases/download/desktop/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

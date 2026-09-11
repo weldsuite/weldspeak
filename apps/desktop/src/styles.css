@@ -173,6 +173,11 @@ body.overlay-window {
 }
 
 .muted { color: var(--muted); margin: 0 0 12px; font-size: 0.9rem; }
+.build {
+  margin: 20px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
 .hint { min-height: 1.1em; margin: 4px 0 0; font-size: 0.82rem; color: var(--muted); }
 .hint.error { color: var(--accent); }
 
