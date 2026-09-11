@@ -1,11 +1,12 @@
 //! Commands the settings window calls.
 
-use serde::Serialize;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use weldspeak_core::auth::now_secs;
 
 use crate::settings::Settings;
-use crate::{auth, hotkey, inject, AppState};
+use crate::{api, auth, hotkey, inject, AppState};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,12 +20,68 @@ pub struct Status {
     pub can_inject: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgSummary {
     pub org_id: String,
     pub name: String,
     pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictionaryTerm {
+    pub id: String,
+    pub scope: String,
+    pub term: String,
+    pub sounds_like: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeResponse {
+    email: Option<String>,
+    orgs: Vec<OrgSummary>,
+}
+
+#[derive(Deserialize)]
+struct TermsResponse {
+    terms: Vec<DictionaryTerm>,
+}
+
+struct SessionContext {
+    api_base: String,
+    token: String,
+    org_id: Option<String>,
+}
+
+fn session_context(app: &AppHandle) -> Result<SessionContext, String> {
+    let state = app.state::<AppState>();
+    let api_base = state
+        .settings
+        .lock()
+        .map_err(|_| "settings unavailable")?
+        .api_base
+        .clone();
+    let org_id = state
+        .settings
+        .lock()
+        .map_err(|_| "settings unavailable")?
+        .org_id
+        .clone();
+    let token = state
+        .auth
+        .lock()
+        .map_err(|_| "session unavailable")?
+        .access_token(now_secs())
+        .map(str::to_owned)
+        .ok_or_else(|| "Sign in to manage your dictionary.".to_string())?;
+    Ok(SessionContext {
+        api_base,
+        token,
+        org_id,
+    })
 }
 
 #[tauri::command]
@@ -89,18 +146,42 @@ pub fn open_permission_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_status(state: State<'_, AppState>) -> Status {
-    let signed_in = state
-        .auth
-        .lock()
-        .map(|auth| auth.access_token(now_secs()).is_some())
-        .unwrap_or(false);
+pub async fn get_status(app: AppHandle) -> Status {
+    let can_inject = inject::can_synthesise_input();
+    let Ok(ctx) = session_context(&app) else {
+        return Status {
+            signed_in: false,
+            email: None,
+            orgs: Vec::new(),
+            can_inject,
+        };
+    };
 
-    Status {
-        signed_in,
-        email: None,
-        orgs: Vec::new(),
-        can_inject: inject::can_synthesise_input(),
+    match api::json::<MeResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/me",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(me) => Status {
+            signed_in: true,
+            email: me.email,
+            orgs: me.orgs,
+            can_inject,
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not load account");
+            Status {
+                signed_in: true,
+                email: None,
+                orgs: Vec::new(),
+                can_inject,
+            }
+        }
     }
 }
 
@@ -200,4 +281,62 @@ pub fn sign_out(state: State<'_, AppState>) -> Result<(), String> {
         auth.clear();
     }
     auth::clear_refresh_token().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_dictionary(app: AppHandle) -> Result<Vec<DictionaryTerm>, String> {
+    let ctx = session_context(&app)?;
+    let response = api::json::<TermsResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/dictionary",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(response.terms)
+}
+
+#[tauri::command]
+pub async fn add_dictionary_term(
+    app: AppHandle,
+    term: String,
+    sounds_like: Option<String>,
+) -> Result<DictionaryTerm, String> {
+    let trimmed = term.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Type a word or phrase to add.".into());
+    }
+    let ctx = session_context(&app)?;
+    api::json::<DictionaryTerm, _>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::POST,
+        "/api/dictionary",
+        ctx.org_id.as_deref(),
+        Some(&serde_json::json!({
+            "term": trimmed,
+            "scope": "user",
+            "soundsLike": sounds_like.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        })),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_dictionary_term(app: AppHandle, id: String) -> Result<(), String> {
+    let ctx = session_context(&app)?;
+    api::send::<()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::DELETE,
+        &format!("/api/dictionary/{id}"),
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }

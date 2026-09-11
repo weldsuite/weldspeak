@@ -1,9 +1,8 @@
 /**
  * The settings window.
  *
- * Everything here is a choice people genuinely differ on. Anything with a
- * defensible default is not a setting — a dictation tool that needs configuring
- * before it works has already lost.
+ * Held to the choices people actually make: sign in, the hold key, and the
+ * words the mic should not guess. Everything else stays out of the way.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -22,9 +21,31 @@ interface Status {
   signedIn: boolean;
   email: string | null;
   orgs: Array<{ orgId: string; name: string; role: string }>;
-  /** False on macOS until the user grants Accessibility. */
   canInject: boolean;
 }
+
+interface DictionaryTerm {
+  id: string;
+  scope: string;
+  term: string;
+  soundsLike: string | null;
+}
+
+const isMac = navigator.userAgent.includes("Mac");
+
+const HOTKEYS = isMac
+  ? [
+      { value: "AltRight", label: "Right Option" },
+      { value: "ControlRight", label: "Right Control" },
+      { value: "F13", label: "F13" },
+      { value: "F8", label: "F8" },
+    ]
+  : [
+      { value: "ControlRight", label: "Right Ctrl" },
+      { value: "AltRight", label: "Right Alt" },
+      { value: "F8", label: "F8" },
+      { value: "F13", label: "F13" },
+    ];
 
 export async function mountSettings(root: HTMLElement): Promise<void> {
   const [settings, status] = await Promise.all([
@@ -32,72 +53,66 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     invoke<Status>("get_status"),
   ]);
 
+  const keyOptions = HOTKEYS.some((key) => key.value === settings.hotkey.accelerator)
+    ? HOTKEYS
+    : [...HOTKEYS, { value: settings.hotkey.accelerator, label: settings.hotkey.accelerator }];
+
   root.innerHTML = `
     <main class="settings">
-      <header>
-        <h1>WeldSpeak</h1>
-        <p class="muted">Hold your dictation key and speak. A bar appears while it is listening.</p>
+      <header class="top">
+        <div>
+          <h1>WeldSpeak</h1>
+          <p class="lede">Hold ${escapeHtml(labelFor(settings.hotkey.accelerator))} to talk.</p>
+        </div>
+        ${status.signedIn ? accountChip(status) : `<button id="sign-in" class="primary">Sign in</button>`}
       </header>
 
       ${status.canInject ? "" : accessibilityWarning()}
-      ${status.signedIn ? signedInPanel(status) : signedOutPanel()}
+      ${status.signedIn ? "" : signedOutPanel()}
+      ${status.signedIn ? dictionaryMarkup() : ""}
 
       <section class="group">
-        <h2>Dictation key</h2>
+        <h2>Shortcut</h2>
         <label>
-          <span>Behaviour</span>
-          <select id="mode">
-            <option value="pushToTalk">Hold to talk</option>
-            <option value="toggle">Press to start and stop</option>
+          <span>Hold to talk</span>
+          <select id="accelerator">
+            ${keyOptions
+              .map(
+                (key) =>
+                  `<option value="${escapeHtml(key.value)}"${
+                    key.value === settings.hotkey.accelerator ? " selected" : ""
+                  }>${escapeHtml(key.label)}</option>`,
+              )
+              .join("")}
           </select>
         </label>
-        <label>
-          <span>Key</span>
-          <input id="accelerator" value="${escapeHtml(settings.hotkey.accelerator)}" />
-        </label>
         <p class="hint" id="hotkey-hint"></p>
-        <p class="hint">Hold the key — you should see a listening bar at the bottom of the screen.</p>
       </section>
 
       <section class="group">
-        <h2>Text</h2>
+        <h2>Dictation</h2>
         <label class="check">
           <input type="checkbox" id="cleanup" ${settings.cleanUpText ? "checked" : ""} />
           <span>
-            Clean up what I say
-            <small>Removes “um”, fixes punctuation and casing. Turn off to insert
-            exactly what was heard.</small>
+            Clean up speech
+            <small>Drop filler and fix punctuation.</small>
           </span>
         </label>
         <label>
           <span>Insert by</span>
           <select id="injection">
-            <option value="automatic">Choosing automatically</option>
-            <option value="alwaysType">Typing (never touches the clipboard)</option>
-            <option value="alwaysPaste">Pasting (fastest for long text)</option>
+            <option value="automatic">Automatic</option>
+            <option value="alwaysType">Typing</option>
+            <option value="alwaysPaste">Pasting</option>
           </select>
-        </label>
-      </section>
-
-      <section class="group">
-        <h2>History</h2>
-        <label class="check">
-          <input type="checkbox" id="history" ${settings.keepHistory ? "checked" : ""} />
-          <span>
-            Keep my dictations
-            <small>Your team&rsquo;s admin can turn this off for everyone.</small>
-          </span>
         </label>
       </section>
     </main>
   `;
 
-  const mode = root.querySelector<HTMLSelectElement>("#mode")!;
-  const accelerator = root.querySelector<HTMLInputElement>("#accelerator")!;
+  const accelerator = root.querySelector<HTMLSelectElement>("#accelerator")!;
   const hint = root.querySelector<HTMLElement>("#hotkey-hint")!;
   const injection = root.querySelector<HTMLSelectElement>("#injection")!;
-
-  mode.value = settings.hotkey.mode;
   injection.value = settings.injection;
 
   const save = async (patch: Partial<Settings>) => {
@@ -105,12 +120,6 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
   };
 
   const validateHotkey = async () => {
-    if (mode.value !== "pushToTalk") {
-      hint.textContent = "";
-      return true;
-    }
-    // The Rust side owns this rule — Fn in particular is not deliverable on
-    // macOS — so the check happens there rather than being duplicated here.
     const error = await invoke<string | null>("validate_hotkey", {
       accelerator: accelerator.value,
     });
@@ -119,15 +128,13 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     return !error;
   };
 
-  mode.addEventListener("change", async () => {
-    if (await validateHotkey()) {
-      await save({ hotkey: { mode: mode.value as Settings["hotkey"]["mode"], accelerator: accelerator.value } });
-    }
-  });
-
   accelerator.addEventListener("change", async () => {
     if (await validateHotkey()) {
-      await save({ hotkey: { mode: mode.value as Settings["hotkey"]["mode"], accelerator: accelerator.value } });
+      await save({
+        hotkey: { mode: "pushToTalk", accelerator: accelerator.value },
+      });
+      const lede = root.querySelector(".lede");
+      if (lede) lede.textContent = `Hold ${labelFor(accelerator.value)} to talk.`;
     }
   });
 
@@ -139,72 +146,44 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     save({ cleanUpText: (event.target as HTMLInputElement).checked }),
   );
 
-  root.querySelector("#history")!.addEventListener("change", (event) =>
-    save({ keepHistory: (event.target as HTMLInputElement).checked }),
-  );
-
   root.querySelector("#grant")?.addEventListener("click", () =>
     invoke("open_permission_settings"),
   );
-
-  root.querySelector("#sign-in")?.addEventListener("click", async () => {
-    const button = root.querySelector<HTMLButtonElement>("#sign-in")!;
-    const errorEl = root.querySelector<HTMLElement>("#sign-in-error")!;
-    const codeEl = root.querySelector<HTMLElement>("#sign-in-code")!;
-    errorEl.textContent = "";
-    button.disabled = true;
-    button.textContent = "Opening browser…";
-    try {
-      // The Rust side opens the system browser. Clerk needs a real origin;
-      // the Tauri webview cannot host that session.
-      const started = await invoke<{ verifyUrl: string; userCode: string }>("begin_sign_in");
-      button.textContent = "Waiting for browser…";
-      codeEl.hidden = false;
-      codeEl.querySelector("strong")!.textContent = started.userCode;
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = "Sign in";
-      errorEl.textContent =
-        typeof error === "string"
-          ? error
-          : error instanceof Error
-            ? error.message
-            : "Could not start sign-in. Check your connection and try again.";
-    }
-  });
 
   root.querySelector("#sign-out")?.addEventListener("click", async () => {
     await invoke("sign_out");
     await mountSettings(root);
   });
 
+  bindSignIn(root);
+
+  if (status.signedIn) {
+    await bindDictionary(root);
+  }
+
   await validateHotkey();
+}
+
+function labelFor(accelerator: string): string {
+  return HOTKEYS.find((key) => key.value === accelerator)?.label ?? accelerator;
+}
+
+function accountChip(status: Status): string {
+  const name = status.email ?? "Signed in";
+  return `
+    <div class="account">
+      <span class="account-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      <button id="sign-out" class="ghost">Sign out</button>
+    </div>
+  `;
 }
 
 function accessibilityWarning(): string {
   return `
     <section class="group warning">
-      <h2>WeldSpeak cannot type yet</h2>
-      <p>
-        macOS needs to allow WeldSpeak to control your keyboard before it can put
-        text into other apps. Until then, dictations are copied to your clipboard.
-      </p>
-      <button id="grant" class="primary">Open Accessibility settings</button>
-    </section>
-  `;
-}
-
-function signedInPanel(status: Status): string {
-  return `
-    <section class="group">
-      <h2>Account</h2>
-      <p>${escapeHtml(status.email ?? "Signed in")}</p>
-      ${
-        status.orgs.length > 0
-          ? `<p class="muted">${escapeHtml(status.orgs.map((o) => o.name).join(", "))}</p>`
-          : ""
-      }
-      <button id="sign-out">Sign out</button>
+      <h2>Keyboard access needed</h2>
+      <p>macOS has to allow WeldSpeak to type into other apps.</p>
+      <button id="grant" class="primary">Open Accessibility</button>
     </section>
   `;
 }
@@ -212,21 +191,141 @@ function signedInPanel(status: Status): string {
 function signedOutPanel(): string {
   return `
     <section class="group">
-      <h2>Sign in</h2>
-      <p class="muted">
-        WeldSpeak opens your browser to sign in, then shows you a short code to
-        confirm.
-      </p>
-      <button id="sign-in" class="primary">Sign in</button>
+      <h2>Account</h2>
+      <p class="muted">Sign in with WeldSuite. A short code in the browser confirms this computer.</p>
       <p class="hint error" id="sign-in-error"></p>
       <p class="sign-in-code" id="sign-in-code" hidden>
-        Confirm this code in the browser: <strong></strong>
+        Confirm this code: <strong></strong>
       </p>
     </section>
   `;
 }
 
-/** Escape text interpolated into markup. */
+function dictionaryMarkup(): string {
+  return `
+    <section class="group dictionary">
+      <h2>Dictionary</h2>
+      <p class="muted">Names, alloys and jargon the mic should not guess at.</p>
+      <form id="term-form" class="term-form">
+        <input id="term-input" type="text" maxlength="128" placeholder="Add a word or phrase" autocomplete="off" />
+        <input id="sounds-input" type="text" maxlength="128" placeholder="Sounds like (optional)" autocomplete="off" />
+        <button class="primary" type="submit">Add</button>
+      </form>
+      <p class="hint error" id="term-error"></p>
+      <ul id="term-list" class="term-list"></ul>
+    </section>
+  `;
+}
+
+function bindSignIn(root: HTMLElement): void {
+  const button = root.querySelector<HTMLButtonElement>("#sign-in");
+  if (!button) return;
+
+  button.addEventListener("click", async () => {
+    const errorEl = root.querySelector<HTMLElement>("#sign-in-error");
+    const codeEl = root.querySelector<HTMLElement>("#sign-in-code");
+    if (errorEl) errorEl.textContent = "";
+    button.disabled = true;
+    button.textContent = "Opening browser…";
+    try {
+      const started = await invoke<{ verifyUrl: string; userCode: string }>("begin_sign_in");
+      button.textContent = "Waiting…";
+      if (codeEl) {
+        codeEl.hidden = false;
+        const strong = codeEl.querySelector("strong");
+        if (strong) strong.textContent = started.userCode;
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Sign in";
+      if (errorEl) {
+        errorEl.textContent =
+          typeof error === "string"
+            ? error
+            : error instanceof Error
+              ? error.message
+              : "Could not start sign-in.";
+      }
+    }
+  });
+}
+
+async function bindDictionary(root: HTMLElement): Promise<void> {
+  const list = root.querySelector<HTMLUListElement>("#term-list");
+  const form = root.querySelector<HTMLFormElement>("#term-form");
+  const input = root.querySelector<HTMLInputElement>("#term-input");
+  const sounds = root.querySelector<HTMLInputElement>("#sounds-input");
+  const errorEl = root.querySelector<HTMLElement>("#term-error");
+  if (!list || !form || !input || !sounds) return;
+
+  const render = (terms: DictionaryTerm[]) => {
+    if (terms.length === 0) {
+      list.innerHTML = `<li class="empty">Nothing here yet.</li>`;
+      return;
+    }
+    list.innerHTML = terms
+      .map(
+        (term) => `
+        <li>
+          <div class="term">
+            <span>${escapeHtml(term.term)}</span>
+            ${term.soundsLike ? `<small>sounds like ${escapeHtml(term.soundsLike)}</small>` : ""}
+          </div>
+          <button type="button" class="ghost" data-delete="${escapeHtml(term.id)}" aria-label="Remove ${escapeHtml(term.term)}">Remove</button>
+        </li>`,
+      )
+      .join("");
+  };
+
+  const reload = async () => {
+    try {
+      render(await invoke<DictionaryTerm[]>("list_dictionary"));
+    } catch (error) {
+      list.innerHTML = `<li class="empty">${escapeHtml(
+        typeof error === "string" ? error : "Could not load your dictionary.",
+      )}</li>`;
+    }
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const term = input.value.trim();
+    if (!term) return;
+    if (errorEl) errorEl.textContent = "";
+    try {
+      const soundsLike = sounds.value.trim();
+      await invoke("add_dictionary_term", {
+        term,
+        ...(soundsLike ? { soundsLike } : {}),
+      });
+      input.value = "";
+      sounds.value = "";
+      input.focus();
+      await reload();
+    } catch (error) {
+      if (errorEl) {
+        errorEl.textContent = typeof error === "string" ? error : "Could not add that term.";
+      }
+    }
+  });
+
+  list.addEventListener("click", async (event) => {
+    const target = event.target as HTMLElement | null;
+    const id = target?.closest("button")?.dataset.delete;
+    if (!id) return;
+    try {
+      await invoke("delete_dictionary_term", { id });
+      await reload();
+    } catch (error) {
+      if (errorEl) {
+        errorEl.textContent = typeof error === "string" ? error : "Could not remove that term.";
+      }
+    }
+  });
+
+  await reload();
+}
+
 function escapeHtml(value: string): string {
   const element = document.createElement("span");
   element.textContent = value;

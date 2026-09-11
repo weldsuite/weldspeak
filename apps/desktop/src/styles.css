@@ -117,56 +117,145 @@ body.overlay-window {
 
 /* --- Settings ------------------------------------------------------------ */
 
-.settings { max-width: 620px; margin: 0 auto; padding: 28px 24px 48px; }
+.settings {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 28px 32px 48px;
+}
 
-.settings header { margin-bottom: 20px; }
-.settings h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
-.settings h2 { margin: 0 0 12px; font-size: 0.95rem; }
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 20px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
 
-.muted { color: var(--muted); }
-.hint { min-height: 1.2em; margin: 6px 0 0; font-size: 0.85rem; color: var(--muted); }
+.settings h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: -0.03em;
+  font-weight: 600;
+}
+
+.settings h2 {
+  margin: 0 0 6px;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.lede {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.account-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.muted { color: var(--muted); margin: 0 0 12px; font-size: 0.9rem; }
+.hint { min-height: 1.1em; margin: 4px 0 0; font-size: 0.82rem; color: var(--muted); }
 .hint.error { color: var(--accent); }
 
 .group {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 14px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .group.warning {
   background: var(--warning-bg);
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 16px 0 0;
 }
+
+.group.warning + .group { border-top: 0; }
 
 label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 7px 0;
+  padding: 6px 0;
 }
 
 label.check { align-items: flex-start; }
 label.check span { display: flex; flex-direction: column; gap: 2px; }
-label small { color: var(--muted); }
+label small { color: var(--muted); font-size: 0.78rem; }
 
 input[type="text"], input:not([type]), select {
   font: inherit;
-  padding: 6px 9px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
+  border-radius: 10px;
+  background: var(--surface);
   color: var(--text);
-  min-width: 220px;
+  min-width: 148px;
+}
+
+.term-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.term-form #term-input { grid-column: 1 / -1; }
+.term-form #sounds-input { min-width: 0; }
+
+.term-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.term-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.term { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.term span { font-size: 0.95rem; }
+.term small { color: var(--muted); font-size: 0.78rem; }
+
+.term-list li.empty {
+  display: block;
+  border-top: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 4px 0 0;
 }
 
 button {
   font: inherit;
-  padding: 7px 13px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -174,10 +263,17 @@ button {
 
 button.primary {
   background: var(--accent);
-  border-color: var(--accent);
   color: #fff;
-  font-weight: 550;
+  font-weight: 600;
 }
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 2px;
+}
+
+button.ghost:hover { color: var(--text); }
 
 button:disabled {
   opacity: 0.65;

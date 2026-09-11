@@ -9,6 +9,7 @@
 //! microphone, hotkeys, event synthesis, and the Tauri shell that holds them
 //! together.
 
+pub mod api;
 pub mod audio;
 pub mod auth;
 pub mod commands;
@@ -122,6 +123,9 @@ pub fn run() {
             commands::get_status,
             commands::begin_sign_in,
             commands::sign_out,
+            commands::list_dictionary,
+            commands::add_dictionary_term,
+            commands::delete_dictionary_term,
         ])
         .setup(|app| {
             // Accessory activation policy: WeldSpeak is a tray utility, and a

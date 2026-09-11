@@ -99,6 +99,14 @@ export function requireAuth(): MiddlewareHandler<AppBindings> {
       return next();
     }
 
+    if (!c.env.CLERK_SECRET_KEY) {
+      console.error("CLERK_SECRET_KEY is not set; browser sessions cannot be verified");
+      return c.json(
+        { error: "misconfigured", message: "Sign-in is not configured on the server." },
+        503,
+      );
+    }
+
     const clerkSession = await verifyClerkSession(c.env, token);
     if (!clerkSession) {
       return c.json({ error: "unauthorized", message: "Invalid or expired token" }, 401);

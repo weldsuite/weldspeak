@@ -48,6 +48,37 @@ function normalizeRole(role: string | undefined): OrgRole | null {
 }
 
 /**
+ * `@clerk/backend` has shipped both shapes:
+ *
+ *   - the public export, wrapped by `withLegacyReturn`, yields claims or throws;
+ *   - the unwrapped helper yields `{ data }` / `{ errors }` and does not throw.
+ *
+ * Treat either as success if a `sub` is present, otherwise as a rejected session.
+ */
+function sessionClaimsFrom(result: unknown): ClerkSessionClaims | null {
+  if (!result || typeof result !== "object") return null;
+
+  const record = result as { data?: unknown; sub?: unknown };
+  const candidates: unknown[] = [record];
+  if (record.data && typeof record.data === "object") {
+    candidates.push(record.data);
+  }
+
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      typeof (candidate as ClerkSessionClaims).sub === "string" &&
+      (candidate as ClerkSessionClaims).sub
+    ) {
+      return candidate as ClerkSessionClaims;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Verify a Clerk session token from the browser.
  *
  * Returns null rather than throwing, so callers reply 401 uniformly instead of
@@ -58,19 +89,27 @@ export async function verifyClerkSession(
   env: Env,
   token: string,
 ): Promise<VerifiedClerkSession | null> {
-  let claims: ClerkSessionClaims;
-  try {
-    claims = (await verifyToken(token, {
-      secretKey: env.CLERK_SECRET_KEY,
-      // The live publishable key names clerk.weldsuite.org as the Frontend API,
-      // so JWKS is fetched from there rather than from Clerk's default host.
-      publishableKey: env.CLERK_PUBLISHABLE_KEY,
-    })) as unknown as ClerkSessionClaims;
-  } catch {
+  if (!env.CLERK_SECRET_KEY) {
+    console.error("CLERK_SECRET_KEY is not set; browser sessions cannot be verified");
     return null;
   }
 
-  if (!claims.sub) return null;
+  let result: unknown;
+  try {
+    result = await verifyToken(token, {
+      secretKey: env.CLERK_SECRET_KEY,
+      clockSkewInMs: 10_000,
+    });
+  } catch (error) {
+    console.warn("clerk session rejected", error);
+    return null;
+  }
+
+  const claims = sessionClaimsFrom(result);
+  if (!claims) {
+    console.warn("clerk session rejected", result);
+    return null;
+  }
 
   const activeOrgId = claims.o?.id ?? claims.org_id ?? null;
   const activeOrgRole = normalizeRole(claims.o?.rol ?? claims.org_role);
