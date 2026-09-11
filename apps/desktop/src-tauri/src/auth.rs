@@ -69,7 +69,9 @@ pub enum SignInError {
 pub async fn start_device_flow(api_base: &str) -> Result<DeviceStart> {
     let label = hostname().unwrap_or_else(|| "Unknown device".into());
 
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()?
         .post(format!("{}/auth/device/start", api_base.trim_end_matches('/')))
         .json(&DeviceStartRequest { platform: platform_name().into(), label })
         .send()

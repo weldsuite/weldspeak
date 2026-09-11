@@ -47,15 +47,15 @@ body.overlay-window {
 .pill {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   margin: 8px;
-  padding: 10px 16px;
+  padding: 12px 18px;
   border-radius: 999px;
-  background: rgba(20, 18, 15, 0.9);
+  background: rgba(20, 18, 15, 0.92);
   color: #f7f4ef;
   backdrop-filter: blur(12px);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
-  font-size: 13px;
+  font-size: 14px;
   opacity: 0;
   transition: opacity 120ms ease;
 }
@@ -64,31 +64,49 @@ body.overlay-window {
 .pill[data-phase="thinking"],
 .pill[data-phase="notice"] { opacity: 1; }
 
-.indicator {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--accent);
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
   flex: none;
 }
 
-.pill[data-phase="listening"] .indicator {
-  animation: pulse 1.1s ease-in-out infinite;
+.waveform span {
+  display: block;
+  width: 3px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: scaleY(0.15);
+  transform-origin: center;
+  transition: transform 50ms linear;
 }
 
-.pill[data-phase="thinking"] .indicator {
+.pill[data-phase="thinking"] .waveform span,
+.pill[data-phase="notice"] .waveform span {
   background: #9ca3af;
+  animation: none;
 }
 
-/* Respect a reduced-motion preference: a pulsing dot in the corner of the eye
-   is exactly the kind of thing that setting exists for. */
+.pill[data-phase="listening"] .waveform span {
+  animation: talk 0.85s ease-in-out infinite;
+}
+
+.pill[data-phase="listening"] .waveform span:nth-child(2) { animation-delay: 0.1s; }
+.pill[data-phase="listening"] .waveform span:nth-child(3) { animation-delay: 0.18s; }
+.pill[data-phase="listening"] .waveform span:nth-child(4) { animation-delay: 0.04s; }
+.pill[data-phase="listening"] .waveform span:nth-child(5) { animation-delay: 0.22s; }
+.pill[data-phase="listening"] .waveform span:nth-child(6) { animation-delay: 0.14s; }
+.pill[data-phase="listening"] .waveform span:nth-child(7) { animation-delay: 0.28s; }
+
+@keyframes talk {
+  0%, 100% { transform: scaleY(0.18); }
+  50% { transform: scaleY(0.9); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .pill[data-phase="listening"] .indicator { animation: none; }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.82); }
+  .pill[data-phase="listening"] .waveform span { animation: none; }
 }
 
 .text {
@@ -159,6 +177,21 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
   font-weight: 550;
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.sign-in-code {
+  margin: 10px 0 0;
+  font-size: 0.95rem;
+}
+
+.sign-in-code strong {
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", monospace;
+  letter-spacing: 0.08em;
 }
 
 input:focus-visible, select:focus-visible, button:focus-visible {

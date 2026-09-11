@@ -104,12 +104,21 @@ pub fn get_status(state: State<'_, AppState>) -> Status {
     }
 }
 
-/// Begin the device authorization grant and return the URL to open.
+/// Begin the device authorization grant, open the system browser, and return
+/// the short code the user must confirm.
 ///
-/// The caller opens it in the *system* browser, not the app's webview: Clerk
-/// needs real cookies on a real origin, which `tauri://localhost` cannot give it.
+/// The browser is opened here rather than from the webview: the opener plugin's
+/// URL ACL is easy to get wrong, and a failed `openUrl` from JS looks like the
+/// Sign in button does nothing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignInStarted {
+    pub verify_url: String,
+    pub user_code: String,
+}
+
 #[tauri::command]
-pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
+pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
     let api_base = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().map_err(|_| "settings unavailable")?;
@@ -121,6 +130,9 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
 
     let verify_url = grant.verify_url.clone();
+    let user_code = grant.user_code.clone();
+
+    open_in_browser(&verify_url)?;
 
     // Poll in the background so the settings window stays responsive while the
     // user signs in.
@@ -141,13 +153,45 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
             }
             Err(error) => {
                 tracing::warn!(%error, "sign-in did not complete");
-                use tauri::Emitter;
-                let _ = app.emit("weldspeak://notice", error.to_string());
+                crate::overlay::show_notice(&app, &error.to_string());
             }
         }
     });
 
-    Ok(verify_url)
+    Ok(SignInStarted {
+        verify_url,
+        user_code,
+    })
+}
+
+/// Open `url` in the user's default browser without going through the webview.
+fn open_in_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| format!("could not open the browser: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("could not open the browser: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = url;
+        Err("opening a browser is not supported on this platform".into())
+    }
 }
 
 #[tauri::command]

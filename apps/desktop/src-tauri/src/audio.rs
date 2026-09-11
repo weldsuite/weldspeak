@@ -13,6 +13,7 @@
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream, StreamConfig};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use weldspeak_core::{Frame, Framer, Resampler};
@@ -28,6 +29,7 @@ use weldspeak_protocol::audio::SAMPLE_RATE;
 /// thread, which drops the stream.
 pub struct Capture {
     shared: Arc<Mutex<Pipeline>>,
+    level: Arc<AtomicU32>,
     _shutdown: Sender<()>,
 }
 
@@ -45,14 +47,16 @@ impl Capture {
         let (shutdown, shutdown_rx) = channel::<()>();
         // The audio thread reports whether the device opened, so a missing or
         // refused microphone surfaces here rather than as silence later.
-        let (ready, ready_rx) = channel::<Result<Arc<Mutex<Pipeline>>>>();
+        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, Arc<AtomicU32>)>>();
+        let level = Arc::new(AtomicU32::new(0));
+        let level_for_thread = Arc::clone(&level);
 
         std::thread::Builder::new()
             .name("weldspeak-audio".into())
             .spawn(move || {
-                let stream = match Self::open(frames) {
-                    Ok((stream, shared)) => {
-                        let _ = ready.send(Ok(shared));
+                let stream = match Self::open(frames, level_for_thread) {
+                    Ok((stream, shared, level)) => {
+                        let _ = ready.send(Ok((shared, level)));
                         stream
                     }
                     Err(error) => {
@@ -67,12 +71,20 @@ impl Capture {
                 drop(stream);
             })?;
 
-        let shared = ready_rx.recv()??;
-        Ok(Self { shared, _shutdown: shutdown })
+        let (shared, _thread_level) = ready_rx.recv()??;
+        Ok(Self { shared, level, _shutdown: shutdown })
+    }
+
+    /// Instantaneous microphone loudness, 0.0–1.0, for the listening waveform.
+    pub fn current_level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
     /// Open the default input device. Runs on the audio thread.
-    fn open(frames: Sender<Frame>) -> Result<(Stream, Arc<Mutex<Pipeline>>)> {
+    fn open(
+        frames: Sender<Frame>,
+        level: Arc<AtomicU32>,
+    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU32>)> {
         let host = cpal::default_host();
         let device = host
             .default_input_device()
@@ -98,10 +110,17 @@ impl Capture {
             framer: Framer::new(),
         }));
 
-        let stream = Self::build_stream(&device, &config, sample_format, shared.clone(), frames)?;
+        let stream = Self::build_stream(
+            &device,
+            &config,
+            sample_format,
+            shared.clone(),
+            Arc::clone(&level),
+            frames,
+        )?;
         stream.play()?;
 
-        Ok((stream, shared))
+        Ok((stream, shared, level))
     }
 
     /// Begin sending frames, returning the retained pre-roll to send first.
@@ -124,6 +143,7 @@ impl Capture {
         config: &StreamConfig,
         format: SampleFormat,
         shared: Arc<Mutex<Pipeline>>,
+        level: Arc<AtomicU32>,
         frames: Sender<Frame>,
     ) -> Result<Stream> {
         // An error on the audio thread must not take the process down: the user
@@ -133,7 +153,10 @@ impl Capture {
         let stream = match format {
             SampleFormat::F32 => device.build_input_stream(
                 config,
-                move |data: &[f32], _| process(&shared, &frames, data),
+                {
+                    let level = Arc::clone(&level);
+                    move |data: &[f32], _| process(&shared, &level, &frames, data)
+                },
                 on_error,
                 None,
             )?,
@@ -143,7 +166,9 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[i16], _| process(&shared, &frames, &convert(data)),
+                    move |data: &[i16], _| {
+                        process(&shared, &level, &frames, &convert(data))
+                    },
                     on_error,
                     None,
                 )?
@@ -154,7 +179,9 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[u16], _| process(&shared, &frames, &convert(data)),
+                    move |data: &[u16], _| {
+                        process(&shared, &level, &frames, &convert(data))
+                    },
                     on_error,
                     None,
                 )?
@@ -171,7 +198,14 @@ impl Capture {
 /// This thread has a hard deadline — overrunning it produces an audible glitch
 /// — so it does no I/O and never blocks. The channel send is non-blocking and a
 /// full channel drops the frame rather than stalling capture.
-fn process(shared: &Arc<Mutex<Pipeline>>, frames: &Sender<Frame>, samples: &[f32]) {
+fn process(
+    shared: &Arc<Mutex<Pipeline>>,
+    level: &Arc<AtomicU32>,
+    frames: &Sender<Frame>,
+    samples: &[f32],
+) {
+    level.store(rms_f32(samples).to_bits(), Ordering::Relaxed);
+
     let Ok(mut pipeline) = shared.try_lock() else {
         // The lock is only held briefly by arm/disarm. Skipping a callback is
         // better than blocking the audio thread waiting for it.
@@ -184,5 +218,29 @@ fn process(shared: &Arc<Mutex<Pipeline>>, frames: &Sender<Frame>, samples: &[f32
             // The receiver is gone; the session has ended.
             return;
         }
+    }
+}
+
+/// Root-mean-square loudness of a buffer, clamped to 0..=1.
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = samples.iter().map(|sample| sample * sample).sum();
+    (sum / samples.len() as f32).sqrt().min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rms_f32;
+
+    #[test]
+    fn silence_is_zero() {
+        assert_eq!(rms_f32(&[0.0, 0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn a_full_scale_tone_is_loud() {
+        assert!(rms_f32(&[1.0, -1.0, 1.0, -1.0]) > 0.9);
     }
 }

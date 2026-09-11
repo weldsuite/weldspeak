@@ -7,7 +7,6 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 interface Settings {
   apiBase: string;
@@ -37,7 +36,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     <main class="settings">
       <header>
         <h1>WeldSpeak</h1>
-        <p class="muted">Hold your dictation key, speak, let go.</p>
+        <p class="muted">Hold your dictation key and speak. A bar appears while it is listening.</p>
       </header>
 
       ${status.canInject ? "" : accessibilityWarning()}
@@ -57,6 +56,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
           <input id="accelerator" value="${escapeHtml(settings.hotkey.accelerator)}" />
         </label>
         <p class="hint" id="hotkey-hint"></p>
+        <p class="hint">Hold the key — you should see a listening bar at the bottom of the screen.</p>
       </section>
 
       <section class="group">
@@ -148,13 +148,35 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
   );
 
   root.querySelector("#sign-in")?.addEventListener("click", async () => {
-    // Sign-in happens in the system browser: Clerk needs real cookies on a real
-    // origin, which the Tauri webview cannot provide.
-    const url = await invoke<string>("begin_sign_in");
-    await openUrl(url);
+    const button = root.querySelector<HTMLButtonElement>("#sign-in")!;
+    const errorEl = root.querySelector<HTMLElement>("#sign-in-error")!;
+    const codeEl = root.querySelector<HTMLElement>("#sign-in-code")!;
+    errorEl.textContent = "";
+    button.disabled = true;
+    button.textContent = "Opening browser…";
+    try {
+      // The Rust side opens the system browser. Clerk needs a real origin;
+      // the Tauri webview cannot host that session.
+      const started = await invoke<{ verifyUrl: string; userCode: string }>("begin_sign_in");
+      button.textContent = "Waiting for browser…";
+      codeEl.hidden = false;
+      codeEl.querySelector("strong")!.textContent = started.userCode;
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Sign in";
+      errorEl.textContent =
+        typeof error === "string"
+          ? error
+          : error instanceof Error
+            ? error.message
+            : "Could not start sign-in. Check your connection and try again.";
+    }
   });
 
-  root.querySelector("#sign-out")?.addEventListener("click", () => invoke("sign_out"));
+  root.querySelector("#sign-out")?.addEventListener("click", async () => {
+    await invoke("sign_out");
+    await mountSettings(root);
+  });
 
   await validateHotkey();
 }
@@ -196,6 +218,10 @@ function signedOutPanel(): string {
         confirm.
       </p>
       <button id="sign-in" class="primary">Sign in</button>
+      <p class="hint error" id="sign-in-error"></p>
+      <p class="sign-in-code" id="sign-in-code" hidden>
+        Confirm this code in the browser: <strong></strong>
+      </p>
     </section>
   `;
 }

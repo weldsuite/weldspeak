@@ -15,13 +15,15 @@ pub mod commands;
 pub mod dictation;
 pub mod hotkey;
 pub mod inject;
+pub mod overlay;
 pub mod settings;
 pub mod transport;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::mpsc::UnboundedSender;
 use weldspeak_core::{AuthStore, Session};
@@ -38,6 +40,9 @@ pub struct AppState {
     pub capture: Mutex<Option<audio::Capture>>,
     /// Channel into the dictation currently in progress, if any.
     pub outbound: Mutex<Option<UnboundedSender<Outbound>>>,
+    /// True while the listening pill is on screen, so the audio thread can
+    /// drive the waveform without the overlay polling.
+    pub overlay_live: AtomicBool,
 }
 
 impl Default for AppState {
@@ -48,6 +53,7 @@ impl Default for AppState {
             session: Mutex::new(Session::new()),
             capture: Mutex::new(None),
             outbound: Mutex::new(None),
+            overlay_live: AtomicBool::new(false),
         }
     }
 }
@@ -92,9 +98,7 @@ pub fn inject_on_main_thread(
 
 /// Surface a message in the overlay window.
 fn notify(app: &AppHandle, message: &str) {
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.emit("weldspeak://notice", message);
-    }
+    overlay::show_notice(app, message);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -151,6 +155,7 @@ pub fn run() {
                 Err(error) => tracing::error!(?error, "could not open the microphone"),
             }
 
+            overlay::prepare(&handle)?;
             register_hotkey(&handle)?;
 
             Ok(())
@@ -288,9 +293,9 @@ pub(crate) fn reregister_hotkey(app: &AppHandle) {
 
     if let Err(error) = app.global_shortcut().register(accelerator.as_str()) {
         tracing::error!(?error, %accelerator, "could not register the dictation hotkey");
-        let _ = app.emit(
-            "weldspeak://notice",
-            format!("{accelerator} is already in use. Choose another key in Settings."),
+        overlay::show_notice(
+            app,
+            &format!("{accelerator} is already in use. Choose another key in Settings."),
         );
     }
 }

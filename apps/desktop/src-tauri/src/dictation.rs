@@ -54,6 +54,9 @@ pub fn begin(app: &AppHandle) {
         session.handle(SessionEvent::HotkeyDown)
     };
 
+    // Show the pill before the socket is up. Without this, a held key looks
+    // like nothing happened — the Wispr Flow complaint.
+    crate::overlay::appear_listening(app);
     perform(app, actions);
 }
 
@@ -119,7 +122,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             }
             Action::Teardown => teardown(app),
             Action::Notify { message } => {
-                let _ = app.emit("weldspeak://notice", message);
+                crate::overlay::show_notice(app, &message);
             }
         }
     }
@@ -273,7 +276,7 @@ fn teardown(app: &AppHandle) {
         }
     }
 
-    let _ = app.emit("weldspeak://done", ());
+    crate::overlay::dismiss(app);
 }
 
 /// Drive the session into its failed state and tell the user.

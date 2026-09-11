@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { mountOverlay } from "./overlay.js";
 import { mountSettings } from "./settings.js";
 import "./styles.css";
@@ -10,5 +11,7 @@ if (window.location.hash === "#/overlay") {
   document.body.classList.add("overlay-window");
   mountOverlay(root);
 } else {
-  void mountSettings(root);
+  const refresh = () => void mountSettings(root);
+  void refresh();
+  void listen("weldspeak://signed-in", refresh);
 }
