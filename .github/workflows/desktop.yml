@@ -10,6 +10,8 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+    # Push this branch to build installers without touching main.
+    branches: ["ci/desktop"]
 
 permissions:
   contents: write
