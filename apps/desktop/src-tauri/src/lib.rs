@@ -20,7 +20,7 @@ pub mod transport;
 
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::mpsc::UnboundedSender;
@@ -127,6 +127,13 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
+            let settings_path = settings::path_for(&handle).map_err(anyhow::Error::msg)?;
+            {
+                let state = handle.state::<AppState>();
+                *state.settings.lock().expect("settings poisoned") =
+                    settings::Settings::load(&settings_path);
+            }
+
             restore_session(&handle);
             build_tray(&handle)?;
 
@@ -211,13 +218,19 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "settings" => {
-                if let Some(window) = app.get_webview_window("settings") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_settings(tray.app_handle());
             }
+        })
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "settings" => show_settings(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -244,28 +257,42 @@ fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .build()
 }
 
+fn show_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Register the configured hotkey.
 fn register_hotkey(app: &AppHandle) -> tauri::Result<()> {
+    reregister_hotkey(app);
+    Ok(())
+}
+
+/// Drop the previous binding and take the one currently in settings.
+///
+/// Called at startup and whenever the user picks a new key. Failures are
+/// surfaced in the overlay rather than aborting: a key another app already
+/// owns is a configuration problem, and Settings has to stay reachable.
+pub(crate) fn reregister_hotkey(app: &AppHandle) {
+    let _ = app.global_shortcut().unregister_all();
+
     let accelerator = {
         let state = app.state::<AppState>();
         let Ok(settings) = state.settings.lock() else {
-            return Ok(());
+            return;
         };
         settings.hotkey.accelerator.clone()
     };
 
     if let Err(error) = app.global_shortcut().register(accelerator.as_str()) {
-        // A hotkey another application already owns is a configuration problem,
-        // not a reason to refuse to start: the user needs the settings window to
-        // choose a different one.
         tracing::error!(?error, %accelerator, "could not register the dictation hotkey");
         let _ = app.emit(
             "weldspeak://notice",
             format!("{accelerator} is already in use. Choose another key in Settings."),
         );
     }
-
-    Ok(())
 }
 
 /// Escape cancels a dictation in progress.

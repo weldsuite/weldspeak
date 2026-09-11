@@ -62,6 +62,9 @@ export async function verifyClerkSession(
   try {
     claims = (await verifyToken(token, {
       secretKey: env.CLERK_SECRET_KEY,
+      // The live publishable key names clerk.weldsuite.org as the Frontend API,
+      // so JWKS is fetched from there rather than from Clerk's default host.
+      publishableKey: env.CLERK_PUBLISHABLE_KEY,
     })) as unknown as ClerkSessionClaims;
   } catch {
     return null;

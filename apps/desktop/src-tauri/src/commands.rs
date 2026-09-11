@@ -43,20 +43,35 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 /// reset fields it has never heard of.
 #[tauri::command]
 pub fn update_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     patch: serde_json::Value,
 ) -> Result<Settings, String> {
-    let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
+    let path = crate::settings::path_for(&app)?;
+    let previous_accelerator;
+    let next = {
+        let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
+        previous_accelerator = settings.hotkey.accelerator.clone();
 
-    let mut merged = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
-    if let (Some(target), Some(source)) = (merged.as_object_mut(), patch.as_object()) {
-        for (key, value) in source {
-            target.insert(key.clone(), value.clone());
+        let mut merged = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
+        if let (Some(target), Some(source)) = (merged.as_object_mut(), patch.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
         }
+
+        *settings = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+        settings
+            .save(&path)
+            .map_err(|error| error.to_string())?;
+        settings.clone()
+    };
+
+    if next.hotkey.accelerator != previous_accelerator {
+        crate::reregister_hotkey(&app);
     }
 
-    *settings = serde_json::from_value(merged).map_err(|e| e.to_string())?;
-    Ok(settings.clone())
+    Ok(next)
 }
 
 /// Check a hotkey, returning a human-readable reason if it will not work.

@@ -42,9 +42,10 @@ apps/desktop              Tauri client: tray, hotkey, microphone, injection
 
 ## Setup
 
-Needs Node 22+, pnpm 10+, and Rust stable. Building the desktop app also needs
-the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform.
+Needs Node 22+ and pnpm 10+. The desktop **installer** is built by GitHub
+Actions — you do not install Rust or Visual Studio to use WeldSpeak. Rust and
+the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) are only
+required if you compile the desktop app on your own machine.
 
 ```bash
 pnpm install
@@ -95,7 +96,56 @@ pnpm --filter @weldspeak/api dev     # Worker on :8787
 pnpm --filter @weldspeak/desktop-ui tauri dev
 ```
 
-In the desktop app, set the API base to `http://localhost:8787` and sign in.
+The desktop app talks to `https://weldspeak.com` by default. For a local
+Worker, point `apiBase` at `http://localhost:8787` in
+`%APPDATA%\io.weldspeak.desktop\settings.json`.
+
+## Desktop installers
+
+GitHub Actions builds the Windows `.exe` and macOS `.dmg`. You never need
+Rust on the machine that will run WeldSpeak.
+
+- **Actions → Desktop installers → Run workflow** — grab the artifact
+- **git tag `v0.1.0` and push** — same files, plus a GitHub Release
+
+Unsigned Windows builds will trip SmartScreen until a code-signing certificate
+is in the workflow. That is expected for a first personal install: More info →
+Run anyway.
+
+## Production
+
+Deployed to the `WeldSuite` Cloudflare account as the Worker `weldspeak-api`,
+serving the API, the dictation WebSocket and the dashboard from one hostname:
+
+```
+https://weldspeak.com                              custom domain
+https://weldspeak-api.fragrant-cake-015a.workers.dev   fallback
+```
+
+The `workers.dev` hostname is kept enabled alongside the custom domain, so
+there is still a way in if the domain is mid-migration or a certificate is
+provisioning.
+
+### Choosing the cleanup model
+
+`CLEANUP_MODEL` is `@cf/meta/llama-3.1-8b-instruct-fast`, not the 70B. Measured
+against the live endpoint, on the same dictated sentence:
+
+| Model                                | Latency    | Within the 700 ms budget |
+| ------------------------------------ | ---------- | ------------------------ |
+| `llama-3.3-70b-instruct-fp8-fast`    | 774–958 ms | never                    |
+| `llama-3.1-8b-instruct-fast`         | 284–622 ms | always                   |
+
+The 70B writes better text — unaided, it recovers `Inconel 625` from a
+recognizer's `Conal 625` where the 8B does not. But it lost the race on every
+sample, so cleanup fell back to the raw transcript every time and the feature
+was in practice switched off. The 8B fits the budget with room to spare.
+
+The vocabulary case the 70B won is not actually lost: it is what the glossary
+is for. With `Inconel 625` in `dictionary_terms`, the recognizer's keyterm
+boost yields `Inconel 625T` directly and the 8B cleans the stray character, so
+the correct term survives the cheaper model. Verified end to end, 771 ms from
+`stop` to `result`.
 
 ## Testing
 
@@ -142,19 +192,26 @@ and should be treated as unverified:
   and release, which is what push-to-talk needs, but its coverage of held
   modifier keys varies by platform. If Right Option does not report a release
   on macOS, that path needs a native `NSEvent` monitor instead.
-- **The Workers AI streaming call is written against documentation, not a live
-  endpoint.** `@cf/deepgram/nova-3` over WebSocket is recent; the option names
-  in `session-do.ts` are the single most likely thing here to have drifted. Run
-  the `test:stream` checkpoint first.
+- ~~**The Workers AI streaming call is written against documentation, not a live
+  endpoint.**~~ Verified against the live endpoint. It had drifted, in exactly
+  the place predicted: Workers AI validates the options payload as all-strings
+  and rejects a number or boolean with a 400 (`expected a string`), so
+  `sample_rate: 16000` and `channels: 1` failed the handshake. Every scalar is
+  now sent as its string form; `keyterm` stays an array. See `#connectUpstream`
+  in `session-do.ts`.
 - **Permissions flows are untested.** Microphone and Accessibility prompts
   behave differently for an app that has never been granted them, so test on a
   fresh macOS user account, not one where you have already clicked allow.
 
 ## Shipping
 
-Distribution needs an Apple Developer account (notarization) and a Windows
-code-signing certificate. Both have procurement lead time — start them early,
-they are the usual reason a release slips.
+Installers are produced by `.github/workflows/desktop.yml` on
+`windows-latest` and `macos-latest`. Those runners already have Rust and the
+C++ toolchain.
+
+Distribution to other people needs an Apple Developer account (notarization)
+and a Windows code-signing certificate. Both have procurement lead time —
+start them early, they are the usual reason a release slips.
 
 macOS Accessibility permission resets when the app's signature changes, so keep
 the signing identity stable across releases or every update silently breaks

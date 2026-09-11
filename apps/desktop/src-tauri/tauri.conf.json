@@ -18,7 +18,7 @@
         "width": 720,
         "height": 560,
         "resizable": true,
-        "visible": false
+        "visible": true
       },
       {
         "label": "overlay",
@@ -41,20 +41,20 @@
     "trayIcon": {
       "id": "main",
       "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
+      "iconAsTemplate": false,
       "tooltip": "WeldSpeak"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "msi", "nsis"],
+    "targets": ["nsis"],
     "icon": ["icons/icon.png"],
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist"
     },
     "windows": {
-      "nsis": { "installMode": "perMachine" }
+      "nsis": { "installMode": "currentUser" }
     }
   }
 }

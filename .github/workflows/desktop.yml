@@ -1,0 +1,68 @@
+# Builds installable desktop apps. You do not need Rust or Visual Studio on
+# your own machine: GitHub's Windows and macOS runners already have them.
+#
+# Run from the Actions tab (Run workflow) or push a tag like v0.1.0.
+# The .exe / .dmg show up as workflow artifacts. Tags also get a GitHub Release.
+
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            args: --bundles nsis
+            artifact: target/release/bundle/nsis/*.exe
+          - name: macOS
+            os: macos-latest
+            args: --bundles dmg
+            artifact: target/release/bundle/dmg/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      # beforeBuildCommand in tauri.conf.json builds the settings UI.
+      - run: pnpm --filter @weldspeak/desktop-ui tauri build -- ${{ matrix.args }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeldSpeak-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}
+          generate_release_notes: true

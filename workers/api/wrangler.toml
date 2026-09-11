@@ -2,6 +2,18 @@ name = "weldspeak-api"
 main = "src/index.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
+# The dashboard and API share one hostname, so the device-approval link the
+# desktop app opens is same-origin with the API it then talks to.
+# Keep the workers.dev hostname alive alongside the custom domain: it is the
+# fallback that still answers if the domain is mid-migration or a cert is
+# still provisioning.
+workers_dev = true
+
+routes = [
+  { pattern = "weldspeak.weldsuite.org", custom_domain = true },
+  { pattern = "weldspeak.com", custom_domain = true }
+]
+
 
 # The web dashboard is served from the same Worker as the API. One deployment
 # target, and the browser talks to the API same-origin, so there is no CORS
@@ -17,14 +29,14 @@ binding = "AI"
 [[d1_databases]]
 binding = "DB"
 database_name = "weldspeak"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "cd71fa9a-9b44-4998-83a5-9707b7aca63c"
 migrations_dir = "migrations"
 
 # Pending device authorizations. KV rather than D1 because these are
 # write-once, read-a-few-times, and expire on their own after ten minutes.
 [[kv_namespaces]]
 binding = "DEVICE_CODES"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "f5985d2fcf664fd38c5c000189d2f18c"
 
 [[durable_objects.bindings]]
 name = "DICTATION"
@@ -35,12 +47,13 @@ tag = "v1"
 new_sqlite_classes = ["DictationSession"]
 
 [vars]
-APP_URL = "http://localhost:5173"
-CLEANUP_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+APP_URL = "https://weldspeak.weldsuite.org"
+CLEANUP_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 STT_MODEL = "@cf/deepgram/nova-3"
+# Publishable: same Clerk application as WeldSuite. Encodes clerk.weldsuite.org.
+CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"
 
 # Secrets — set with `wrangler secret put <NAME>`, never committed:
-#   CLERK_SECRET_KEY        Clerk backend API key (sk_...)
-#   CLERK_PUBLISHABLE_KEY   Clerk publishable key (pk_...), used to derive the JWKS issuer
+#   CLERK_SECRET_KEY        WeldSuite Clerk secret (sk_live_...)
 #   CLERK_WEBHOOK_SECRET    Svix signing secret for the Clerk webhook
 #   TOKEN_SIGNING_KEY       Random 32+ byte secret used to sign WeldSpeak access tokens

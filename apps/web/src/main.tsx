@@ -17,6 +17,10 @@ if (!publishableKey) {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    {/* Same Clerk app as WeldSuite. The live publishable key encodes
+        clerk.weldsuite.org as the Frontend API, so accounts and sessions are
+        the WeldSuite ones. Serve the dashboard on *.weldsuite.org so the
+        session cookie is shared with app.weldsuite.org. */}
     <ClerkProvider publishableKey={publishableKey} afterSignOutUrl="/">
       <BrowserRouter>
         <App />

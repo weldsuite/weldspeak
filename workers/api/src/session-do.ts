@@ -181,25 +181,42 @@ export class DictationSession extends DurableObject<Env> {
    *
    * Workers AI returns a WebSocket for streaming models when called with
    * `{ websocket: true }`; recognition options travel in the same call.
+   *
+   * Every option value is sent as a string. Workers AI validates this payload
+   * as all-strings and rejects a number or boolean with a 400 ("expected a
+   * string"), so `sample_rate: 16000` fails where `"16000"` succeeds. Only
+   * `keyterm` stays structured, as an array of strings.
    */
   async #connectUpstream(frame: StartFrame, keyterms: string[]): Promise<void> {
     const response = (await this.env.AI.run(
       this.env.STT_MODEL as never,
       {
         encoding: "linear16",
-        sample_rate: SAMPLE_RATE,
-        channels: 1,
-        interim_results: true,
-        punctuate: true,
-        smart_format: true,
+        sample_rate: String(SAMPLE_RATE),
+        channels: "1",
+        interim_results: "true",
+        punctuate: "true",
+        smart_format: "true",
         ...(frame.locale ? { language: frame.locale } : {}),
         ...(keyterms.length > 0 ? { keyterm: keyterms } : {}),
       } as never,
       { websocket: true } as never,
-    )) as unknown as { webSocket?: WebSocket };
+    )) as unknown as Response & { webSocket?: WebSocket };
 
     const upstream = response?.webSocket;
-    if (!upstream) throw new Error("no WebSocket returned by Workers AI");
+    // A refused handshake comes back as an ordinary error response whose body
+    // names the offending option. That body is the only thing worth having
+    // when the model's schema drifts, so it travels with the error rather than
+    // being swallowed into a bare "no WebSocket".
+    if (!upstream) {
+      let detail = "";
+      try {
+        detail = ` ${(await response.text()).slice(0, 300)}`;
+      } catch {
+        /* no readable body */
+      }
+      throw new Error(`Workers AI returned no WebSocket (status ${response?.status})${detail}`);
+    }
 
     upstream.accept();
     this.#upstream = upstream;

@@ -4,12 +4,23 @@
 //! it works has already failed; these are the choices people genuinely differ
 //! on, and everything else has a defensible default.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use weldspeak_core::inject::Preference;
 use crate::hotkey::Binding;
 
 /// Where the API lives. Overridable for local development.
-pub const DEFAULT_API_BASE: &str = "https://app.weldspeak.io";
+pub const DEFAULT_API_BASE: &str = "https://weldspeak.weldsuite.org";
+
+/// Hosts from earlier drafts. If a saved settings file still points at one of
+/// these, rewrite it to the live hostname so an old file cannot silently send
+/// sign-in at a domain that does not exist.
+const LEGACY_API_BASES: &[&str] = &[
+    "https://app.weldspeak.io",
+    "https://api.weldspeak.io",
+    "https://weldspeak.com",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -52,6 +63,45 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// Load from disk, or the built-in defaults if the file is missing or junk.
+    pub fn load(path: &Path) -> Self {
+        let mut settings = match std::fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(_) => Self::default(),
+        };
+        settings.migrate_api_base();
+        settings
+    }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(self).context("serializing settings")?;
+        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    fn migrate_api_base(&mut self) {
+        let trimmed = self.api_base.trim_end_matches('/');
+        if LEGACY_API_BASES.contains(&trimmed) {
+            self.api_base = DEFAULT_API_BASE.into();
+        }
+    }
+}
+
+/// `%APPDATA%\io.weldspeak.desktop\settings.json` on Windows.
+pub fn path_for(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("settings.json"))
+}
+
 /// Serializable mirror of `weldspeak_core::inject::Preference`.
 ///
 /// The core type is deliberately free of serde so the portable crate stays
@@ -87,6 +137,37 @@ mod tests {
         // anyone opens settings.
         assert!(settings.clean_up_text);
         assert_eq!(settings.injection, InjectionPreference::Automatic);
+        assert_eq!(settings.api_base, "https://weldspeak.weldsuite.org");
+    }
+
+    #[test]
+    fn rewrites_legacy_api_hosts() {
+        let dir = std::env::temp_dir().join(format!("weldspeak-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"apiBase":"https://app.weldspeak.io"}"#).unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(settings.api_base, DEFAULT_API_BASE);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn round_trips_through_a_file() {
+        let dir = std::env::temp_dir().join(format!("weldspeak-settings-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let mut original = Settings::default();
+        original.keep_history = false;
+        original.save(&path).unwrap();
+
+        let loaded = Settings::load(&path);
+        assert!(!loaded.keep_history);
+        assert_eq!(loaded.api_base, DEFAULT_API_BASE);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
