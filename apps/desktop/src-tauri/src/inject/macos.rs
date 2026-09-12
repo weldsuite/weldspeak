@@ -131,3 +131,57 @@ pub fn send_paste_shortcut() -> Result<()> {
 
     Ok(())
 }
+
+/// Text in the focused control, if Accessibility will tell us.
+pub fn focused_text() -> Option<String> {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+
+    type AXUIElementRef = *const std::ffi::c_void;
+    type AXError = i32;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+        fn AXUIElementCopyAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFStringRef,
+            value: *mut *const std::ffi::c_void,
+        ) -> AXError;
+        fn CFRelease(cf: *const std::ffi::c_void);
+    }
+
+    unsafe {
+        let system = AXUIElementCreateSystemWide();
+        if system.is_null() {
+            return None;
+        }
+        let focused_attr = CFString::from_static_string("AXFocusedUIElement");
+        let mut focused: *const std::ffi::c_void = std::ptr::null();
+        let status = AXUIElementCopyAttributeValue(
+            system,
+            focused_attr.as_concrete_TypeRef(),
+            &mut focused,
+        );
+        CFRelease(system);
+        if status != 0 || focused.is_null() {
+            return None;
+        }
+        let value_attr = CFString::from_static_string("AXValue");
+        let mut value: *const std::ffi::c_void = std::ptr::null();
+        let status =
+            AXUIElementCopyAttributeValue(focused, value_attr.as_concrete_TypeRef(), &mut value);
+        CFRelease(focused);
+        if status != 0 || value.is_null() {
+            return None;
+        }
+        let cf = CFString::wrap_under_create_rule(value as CFStringRef);
+        let text = cf.to_string();
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.len() > 8_000 {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+}

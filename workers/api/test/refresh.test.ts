@@ -214,3 +214,41 @@ describe("clerk webhook", () => {
     expect(remaining?.n).toBe(0);
   });
 });
+
+describe("auto-learned dictionary terms", () => {
+  it("adds a correction as a personal term with a sounds-like hint", async () => {
+    const token = await tokenFor(MEMBER_USER, acmeMember);
+    const created = await call("/api/dictionary/learn", {
+      method: "POST",
+      token,
+      org: ORG_ACME,
+      body: { heard: "inconel", meant: "Inconel 625" },
+    });
+    expect(created.status).toBe(201);
+
+    const listed = await call("/api/dictionary", { token, org: ORG_ACME });
+    const { terms } = await listed.json<{
+      terms: Array<{ term: string; soundsLike: string | null; scope: string }>;
+    }>();
+    const match = terms.find((term) => term.term === "Inconel 625");
+    expect(match?.soundsLike).toBe("inconel");
+    expect(match?.scope).toBe("user");
+  });
+
+  it("updates the sounds-like hint when the same spelling is learned again", async () => {
+    const token = await tokenFor(MEMBER_USER, acmeMember);
+    await call("/api/dictionary/learn", {
+      method: "POST",
+      token,
+      body: { meant: "Inconel 625" },
+    });
+    const again = await call("/api/dictionary/learn", {
+      method: "POST",
+      token,
+      body: { heard: "in colonel", meant: "Inconel 625" },
+    });
+    expect(again.status).toBe(200);
+    const body = await again.json<{ soundsLike: string | null }>();
+    expect(body.soundsLike).toBe("in colonel");
+  });
+});

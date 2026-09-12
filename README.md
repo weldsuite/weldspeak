@@ -13,11 +13,10 @@ speak, so the text is ready the moment you release the key. Uploading a
 recording afterwards would add a second of dead air to every dictation, and
 that second is the difference between a tool people use and one they abandon.
 
-**Cleanup with a deadline.** The raw transcript is passed through a fast model
-that removes fillers and false starts and fixes punctuation. It runs against a
-hard 700 ms budget, and if it misses, the raw transcript ships instead. A
-slightly scruffy result that arrives instantly beats a polished one that
-arrives late.
+**Cleanup with a deadline.** The raw transcript is passed through a model that
+removes fillers and false starts and fixes punctuation. It runs against a
+2.5 s budget, and if it misses, the raw transcript ships instead. A slightly
+scruffy result that arrives instantly beats a polished one that arrives late.
 
 **Clerk stays in the browser.** Clerk session tokens live about a minute and
 refresh through cookies on your own domain, so a desktop app cannot hold one.
@@ -128,24 +127,22 @@ provisioning.
 
 ### Choosing the cleanup model
 
-`CLEANUP_MODEL` is `@cf/meta/llama-3.1-8b-instruct-fast`, not the 70B. Measured
-against the live endpoint, on the same dictated sentence:
+`CLEANUP_MODEL` is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Measured against
+the live endpoint, on the same dictated sentence:
 
-| Model                                | Latency    | Within the 700 ms budget |
-| ------------------------------------ | ---------- | ------------------------ |
-| `llama-3.3-70b-instruct-fp8-fast`    | 774–958 ms | never                    |
-| `llama-3.1-8b-instruct-fast`         | 284–622 ms | always                   |
+| Model                                | Latency    | Within a 700 ms budget | Within 2.5 s |
+| ------------------------------------ | ---------- | ---------------------- | ------------ |
+| `llama-3.3-70b-instruct-fp8-fast`    | 774–958 ms | never                  | always       |
+| `llama-3.1-8b-instruct-fast`         | 284–622 ms | always                 | always       |
 
 The 70B writes better text — unaided, it recovers `Inconel 625` from a
-recognizer's `Conal 625` where the 8B does not. But it lost the race on every
-sample, so cleanup fell back to the raw transcript every time and the feature
-was in practice switched off. The 8B fits the budget with room to spare.
+recognizer's `Conal 625` where the 8B does not. The old 700 ms deadline made
+that a loss every time, so cleanup fell back to the raw transcript and the
+feature was in practice switched off. With a 2.5 s budget the 70B finishes
+with room to spare, so it is the production model.
 
-The vocabulary case the 70B won is not actually lost: it is what the glossary
-is for. With `Inconel 625` in `dictionary_terms`, the recognizer's keyterm
-boost yields `Inconel 625T` directly and the 8B cleans the stray character, so
-the correct term survives the cheaper model. Verified end to end, 771 ms from
-`stop` to `result`.
+The glossary still matters for the recognizer: with `Inconel 625` in
+`dictionary_terms`, keyterm boost yields the term before cleanup even runs.
 
 ## Testing
 

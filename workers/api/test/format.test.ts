@@ -210,8 +210,8 @@ describe("cleanup", () => {
     expect(called).toBe(false);
   });
 
-  it("defaults to a deadline short enough to stay off the critical path", () => {
-    // Budgeted against the 500 ms p50 target for hotkey-release to visible text.
-    expect(CLEANUP_TIMEOUT_MS).toBeLessThanOrEqual(1_000);
+  it("defaults to a deadline the cleanup model can actually meet", () => {
+    expect(CLEANUP_TIMEOUT_MS).toBeGreaterThanOrEqual(2_000);
+    expect(CLEANUP_TIMEOUT_MS).toBeLessThanOrEqual(4_000);
   });
 });

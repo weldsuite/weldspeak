@@ -18,11 +18,11 @@ import type { Env } from "./env.js";
 /**
  * Deadline for the cleanup pass.
  *
- * Chosen against the end-to-end target of 500 ms p50 from hotkey release to
- * visible text: recognizer finalization and injection consume most of that,
- * leaving cleanup a budget it usually meets and never exceeds.
+ * Long enough for llama-3.3-70b-instruct-fp8-fast (~800–1000 ms measured) to
+ * finish punctuation and homophone fixes. The old 700 ms budget made the 70B
+ * miss every time, so cleanup fell back to raw speech.
  */
-export const CLEANUP_TIMEOUT_MS = 700;
+export const CLEANUP_TIMEOUT_MS = 2_500;
 
 const SYSTEM_PROMPT = `You are a dictation formatter, not a chatbot.
 
@@ -196,7 +196,7 @@ export async function cleanupTranscript(
         temperature: 0.1,
         // Cleaned text is never much longer than its input; this caps a runaway
         // generation without truncating legitimate output.
-        max_tokens: Math.min(2048, Math.ceil(trimmed.length / 2) + 256),
+        max_tokens: Math.min(2048, Math.max(512, trimmed.length + 128)),
       } as never)) as { response?: string };
 
       return typeof response?.response === "string" ? response.response : null;

@@ -483,7 +483,7 @@ function dictionaryMarkup(): string {
     <section class="block dictionary">
       <h2>Dictionary</h2>
       <div class="card">
-        <p class="muted">Names, alloys and jargon the mic should not guess at.</p>
+        <p class="muted">Names, alloys and jargon the mic should not guess at. WeldSpeak adds them when you correct a dictation, and when a name stands out in what you said.</p>
         <form id="term-form" class="term-form">
           <input id="term-input" type="text" maxlength="128" placeholder="Add a word or phrase" autocomplete="off" />
           <input id="sounds-input" type="text" maxlength="128" placeholder="Sounds like (optional)" autocomplete="off" />

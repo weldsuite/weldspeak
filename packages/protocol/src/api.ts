@@ -103,6 +103,13 @@ export interface CreateTermRequest {
   soundsLike?: string | null;
 }
 
+export interface LearnCorrectionRequest {
+  /** What the recognizer or formatter wrote, if known. */
+  heard?: string | null;
+  /** The spelling that should be used from now on. */
+  meant: string;
+}
+
 // --- Transcripts -----------------------------------------------------------
 
 export interface TranscriptRecord {

@@ -335,12 +335,12 @@ export class DictationSession extends DurableObject<Env> {
   }
 
   /**
-   * Wait briefly for the recognizer's last final after `CloseStream`.
+   * Wait for the recognizer's last final after `CloseStream`.
    *
-   * Resolves as soon as a final arrives, rather than always burning the full
-   * timeout — this sits directly on the hotkey-release-to-text path.
+   * Resolves as soon as a final arrives. The timeout is only a backstop for a
+   * recognizer that never flushes, so the tail of the last word is not cut.
    */
-  async #awaitFinalTranscript(timeoutMs = 400): Promise<void> {
+  async #awaitFinalTranscript(timeoutMs = 800): Promise<void> {
     const before = this.#finals.length;
     const deadline = Date.now() + timeoutMs;
 

@@ -122,6 +122,11 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
     set_clipboard(text)
 }
 
+/// Best-effort contents of the focused field, used to notice post-dictation edits.
+pub fn focused_text() -> Option<String> {
+    platform::focused_text()
+}
+
 fn set_clipboard(text: &str) -> Result<()> {
     arboard::Clipboard::new()?.set_text(text.to_string())?;
     Ok(())

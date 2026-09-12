@@ -48,7 +48,7 @@ new_sqlite_classes = ["DictationSession"]
 
 [vars]
 APP_URL = "https://weldspeak.weldsuite.org"
-CLEANUP_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+CLEANUP_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 STT_MODEL = "@cf/deepgram/nova-3"
 # Publishable: same Clerk application as WeldSuite. Encodes clerk.weldsuite.org.
 CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"

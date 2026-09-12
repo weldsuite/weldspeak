@@ -16,6 +16,7 @@ pub mod commands;
 pub mod dictation;
 pub mod hotkey;
 pub mod inject;
+pub mod learn;
 pub mod media;
 pub mod overlay;
 pub mod settings;
@@ -88,12 +89,14 @@ pub fn inject_on_main_thread(
         match inject::deliver(&text, preference) {
             Ok(inject::Outcome::Injected) => {
                 tracing::debug!(chars = text.chars().count(), "injected");
+                crate::learn::after_inject(&for_closure, text);
             }
             Ok(inject::Outcome::ClipboardOnly { reason }) => {
                 // Not an error: on a managed machine Accessibility may simply be
                 // unavailable. The text is on the clipboard and the user is told.
                 tracing::info!(%reason, "injection unavailable; text left on the clipboard");
                 notify(&for_closure, &reason);
+                crate::learn::after_inject(&for_closure, text);
             }
             Err(error) => {
                 tracing::error!(?error, "injection failed");
@@ -221,6 +224,11 @@ fn restore_session(app: &AppHandle) {
                 let state = app.state::<AppState>();
                 let mut store = state.auth.lock().expect("auth store poisoned");
                 store.accept(tokens);
+                drop(store);
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::learn::flush_to_dictionary(&app).await;
+                });
             }
             Err(fatal) => {
                 // Fatal means the server refused: revoked, reused, or the user

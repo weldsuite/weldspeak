@@ -54,6 +54,7 @@ pub fn begin(app: &AppHandle) {
         session.handle(SessionEvent::HotkeyDown)
     };
 
+    crate::learn::invalidate();
     // Show the pill before the socket is up. Without this, a held key looks
     // like nothing happened — the Wispr Flow complaint.
     crate::overlay::appear_listening(app);
@@ -102,7 +103,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 teardown(app);
             }
             Action::Inject { text } => {
-                let (preference, snippets) = {
+                let (preference, snippets, corrections) = {
                     let state = app.state::<AppState>();
                     let settings = state.settings.lock().ok();
                     let preference = settings
@@ -110,11 +111,16 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                         .map(|settings| settings.injection.into())
                         .unwrap_or_default();
                     let snippets = settings
+                        .as_ref()
                         .map(|settings| settings.snippets.clone())
                         .unwrap_or_default();
-                    (preference, snippets)
+                    let corrections = settings
+                        .map(|settings| settings.corrections.clone())
+                        .unwrap_or_default();
+                    (preference, snippets, corrections)
                 };
                 let text = crate::snippets::expand(&text, &snippets);
+                let text = crate::learn::apply(&text, &corrections);
                 remember_transcript(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
 

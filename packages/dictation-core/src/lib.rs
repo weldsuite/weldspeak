@@ -12,10 +12,12 @@
 pub mod auth;
 pub mod frame;
 pub mod inject;
+pub mod learn;
 pub mod resample;
 pub mod session;
 
 pub use auth::{AuthState, AuthStore, Tokens};
+pub use learn::Correction;
 pub use frame::{Frame, Framer};
 pub use inject::{plan, plan_or_clipboard_only, Fallback, Method, Plan, Preference};
 pub use resample::Resampler;
