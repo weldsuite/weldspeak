@@ -6,7 +6,14 @@
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+use tauri::window::Color;
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, WebviewWindow};
+
+/// Waveform only — the Wispr-sized capsule. Grows when partials or notices need type.
+const COMPACT_SIZE: LogicalSize<f64> = LogicalSize {
+    width: 96.0,
+    height: 48.0,
+};
 
 use crate::audio::Capture;
 use crate::AppState;
@@ -21,11 +28,24 @@ fn set_live(app: &AppHandle, live: bool) {
         .store(live, Ordering::Relaxed);
 }
 
-fn reveal(app: &AppHandle, window: &WebviewWindow) {
-    position_over_cursor(app, window);
+fn reveal(app: &AppHandle, window: &WebviewWindow, size: LogicalSize<f64>) {
+    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
+    let _ = window.set_size(Size::Logical(size));
+    position_over_cursor(app, window, size);
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
+}
+
+fn notice_size(message: &str) -> LogicalSize<f64> {
+    if message.is_empty() {
+        return COMPACT_SIZE;
+    }
+    let width = (92.0 + message.len() as f64 * 6.8).clamp(132.0, 320.0);
+    LogicalSize {
+        width,
+        height: 48.0,
+    }
 }
 
 /// Place the pill on the monitor under the cursor, above the taskbar, and make
@@ -35,8 +55,10 @@ pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     };
 
+    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
     let _ = window.set_ignore_cursor_events(true);
-    position_over_cursor(app, &window);
+    let _ = window.set_size(Size::Logical(COMPACT_SIZE));
+    position_over_cursor(app, &window, COMPACT_SIZE);
     spawn_level_ticker(app.clone());
     Ok(())
 }
@@ -45,15 +67,31 @@ pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
 pub fn appear_listening(app: &AppHandle) {
     set_live(app, true);
     if let Some(window) = window(app) {
-        reveal(app, &window);
+        reveal(app, &window, COMPACT_SIZE);
     }
     let _ = app.emit("weldspeak://listening", ());
+}
+
+/// Stretch the capsule just enough for the last few recognised words.
+pub fn show_partial(app: &AppHandle, preview: &str) {
+    let shown = last_words(preview, 6);
+    if let Some(window) = window(app) {
+        let size = notice_size(&shown);
+        let _ = window.set_size(Size::Logical(size));
+        position_over_cursor(app, &window, size);
+    }
+}
+
+fn last_words(text: &str, n: usize) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let start = words.len().saturating_sub(n);
+    words[start..].join(" ")
 }
 
 pub fn show_notice(app: &AppHandle, message: &str) {
     set_live(app, false);
     if let Some(window) = window(app) {
-        reveal(app, &window);
+        reveal(app, &window, notice_size(message));
     }
     let _ = app.emit("weldspeak://notice", message);
     hide_later(app, Duration::from_secs(4));
@@ -65,7 +103,7 @@ pub fn show_notice(app: &AppHandle, message: &str) {
 pub fn show_status(app: &AppHandle, message: &str) {
     set_live(app, false);
     if let Some(window) = window(app) {
-        reveal(app, &window);
+        reveal(app, &window, notice_size(message));
     }
     let _ = app.emit("weldspeak://notice", message);
 }
@@ -116,7 +154,7 @@ fn spawn_level_ticker(app: AppHandle) {
     });
 }
 
-fn position_over_cursor(app: &AppHandle, window: &WebviewWindow) {
+fn position_over_cursor(app: &AppHandle, window: &WebviewWindow, logical: LogicalSize<f64>) {
     let monitor = app
         .cursor_position()
         .ok()
@@ -126,14 +164,15 @@ fn position_over_cursor(app: &AppHandle, window: &WebviewWindow) {
     let Some(monitor) = monitor else {
         return;
     };
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
 
-    // Bottom centre, with room above the Windows taskbar.
+    // Use the size we just asked for. `outer_size` lags a frame behind `set_size`,
+    // which would leave a growing notice off-centre.
+    let scale = monitor.scale_factor();
+    let width = (logical.width * scale).round() as i32;
+    let height = (logical.height * scale).round() as i32;
     let origin = monitor.position();
     let area = monitor.size();
-    let x = origin.x + (area.width as i32 - size.width as i32) / 2;
-    let y = origin.y + area.height as i32 - size.height as i32 - 72;
+    let x = origin.x + (area.width as i32 - width) / 2;
+    let y = origin.y + area.height as i32 - height - 56;
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }

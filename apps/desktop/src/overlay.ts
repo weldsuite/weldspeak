@@ -14,7 +14,7 @@ type Phase = "idle" | "listening" | "thinking" | "notice";
 export function mountOverlay(root: HTMLElement): void {
   root.innerHTML = `
     <div class="pill" data-phase="idle">
-      <div class="waveform" aria-hidden="true">${Array.from({ length: 7 }, () => "<span></span>").join("")}</div>
+      <div class="waveform" aria-hidden="true">${Array.from({ length: 5 }, () => "<span></span>").join("")}</div>
       <span class="text" role="status" aria-live="polite"></span>
     </div>
   `;
@@ -34,16 +34,16 @@ export function mountOverlay(root: HTMLElement): void {
     } else {
       for (const bar of bars) {
         bar.style.animation = "none";
-        bar.style.transform = "scaleY(0.15)";
+        bar.style.transform = "scaleY(0.2)";
       }
     }
   };
 
-  void listen("weldspeak://listening", () => set("listening", "Listening…"));
+  void listen("weldspeak://listening", () => set("listening", ""));
 
   void listen<string>("weldspeak://partial", (event) => {
-    const words = event.payload.split(/\s+/);
-    set("listening", words.slice(-12).join(" "));
+    const words = event.payload.trim().split(/\s+/).filter(Boolean);
+    set("listening", words.slice(-6).join(" "));
   });
 
   void listen<number>("weldspeak://level", (event) => {
@@ -51,7 +51,7 @@ export function mountOverlay(root: HTMLElement): void {
     const boosted = Math.min(1, Math.max(0, event.payload) * 8);
     const now = Date.now();
     bars.forEach((bar, index) => {
-      const centre = 1 - Math.abs(index - 3) / 4;
+      const centre = 1 - Math.abs(index - 2) / 3;
       const idle = 0.18 + 0.16 * Math.abs(Math.sin(now / 160 + index));
       const height = Math.max(idle, Math.min(1, boosted * (0.45 + centre)));
       bar.style.animation = "none";
@@ -59,7 +59,7 @@ export function mountOverlay(root: HTMLElement): void {
     });
   });
 
-  void listen("weldspeak://thinking", () => set("thinking", "Tidying up…"));
+  void listen("weldspeak://thinking", () => set("thinking", ""));
   void listen("weldspeak://done", () => set("idle", ""));
   void listen<string>("weldspeak://notice", (event) => set("notice", event.payload));
 }

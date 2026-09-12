@@ -61,56 +61,67 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
 
   root.innerHTML = `
     <main class="settings">
-      <header class="top">
+      <header class="top" data-tauri-drag-region>
         <div>
           <h1>WeldSpeak</h1>
-          <p class="lede">Hold ${escapeHtml(labelFor(settings.hotkey.accelerator))} to talk.</p>
+          <p class="lede">Hold ${escapeHtml(labelFor(settings.hotkey.accelerator))} to talk</p>
         </div>
-        ${status.signedIn ? accountChip(status) : `<button id="sign-in" class="primary">Sign in</button>`}
+        ${status.signedIn ? accountChip(status) : ""}
       </header>
 
       ${status.canInject ? "" : accessibilityWarning()}
       ${status.signedIn ? "" : signedOutPanel()}
+
+      <section class="block">
+        <h2>Dictation</h2>
+        <div class="card">
+          <label class="row">
+            <span>Hold to talk</span>
+            <select id="accelerator">
+              ${keyOptions
+                .map(
+                  (key) =>
+                    `<option value="${escapeHtml(key.value)}"${
+                      key.value === settings.hotkey.accelerator ? " selected" : ""
+                    }>${escapeHtml(key.label)}</option>`,
+                )
+                .join("")}
+            </select>
+          </label>
+          <p class="hint" id="hotkey-hint"></p>
+          <label class="row">
+            <span class="row-copy">
+              Clean up speech
+              <small>Drop filler and fix punctuation</small>
+            </span>
+            <input id="cleanup" class="switch" type="checkbox" ${settings.cleanUpText ? "checked" : ""} />
+          </label>
+          <label class="row">
+            <span>Insert by</span>
+            <select id="injection">
+              <option value="automatic">Automatic</option>
+              <option value="alwaysType">Typing</option>
+              <option value="alwaysPaste">Pasting</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
       ${status.signedIn ? dictionaryMarkup() : ""}
 
-      <section class="group">
-        <h2>Shortcut</h2>
-        <label>
-          <span>Hold to talk</span>
-          <select id="accelerator">
-            ${keyOptions
-              .map(
-                (key) =>
-                  `<option value="${escapeHtml(key.value)}"${
-                    key.value === settings.hotkey.accelerator ? " selected" : ""
-                  }>${escapeHtml(key.label)}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
-        <p class="hint" id="hotkey-hint"></p>
+      <section class="block">
+        <h2>App</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-copy">
+              Version
+              <small>WeldSpeak ${escapeHtml(version)}</small>
+            </span>
+            <button id="check-update" type="button">Update</button>
+          </div>
+          <p class="hint" id="update-hint"></p>
+        </div>
       </section>
-
-      <section class="group">
-        <h2>Dictation</h2>
-        <label class="check">
-          <input type="checkbox" id="cleanup" ${settings.cleanUpText ? "checked" : ""} />
-          <span>
-            Clean up speech
-            <small>Drop filler and fix punctuation.</small>
-          </span>
-        </label>
-        <label>
-          <span>Insert by</span>
-          <select id="injection">
-            <option value="automatic">Automatic</option>
-            <option value="alwaysType">Typing</option>
-            <option value="alwaysPaste">Pasting</option>
-          </select>
-        </label>
-      </section>
-
-      <p class="build">WeldSpeak ${escapeHtml(version)} · updates itself</p>
     </main>
   `;
 
@@ -138,7 +149,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
         hotkey: { mode: "pushToTalk", accelerator: accelerator.value },
       });
       const lede = root.querySelector(".lede");
-      if (lede) lede.textContent = `Hold ${labelFor(accelerator.value)} to talk.`;
+      if (lede) lede.textContent = `Hold ${labelFor(accelerator.value)} to talk`;
     }
   });
 
@@ -165,6 +176,8 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     await bindDictionary(root);
   }
 
+  bindUpdate(root);
+
   await validateHotkey();
 }
 
@@ -184,41 +197,84 @@ function accountChip(status: Status): string {
 
 function accessibilityWarning(): string {
   return `
-    <section class="group warning">
-      <h2>Keyboard access needed</h2>
-      <p>macOS has to allow WeldSpeak to type into other apps.</p>
-      <button id="grant" class="primary">Open Accessibility</button>
+    <section class="block warning">
+      <h2>Keyboard access</h2>
+      <div class="card">
+        <p>macOS has to allow WeldSpeak to type into other apps.</p>
+        <div class="row actions">
+          <button id="grant" class="primary">Open Accessibility</button>
+        </div>
+      </div>
     </section>
   `;
 }
 
 function signedOutPanel(): string {
   return `
-    <section class="group">
+    <section class="block">
       <h2>Account</h2>
-      <p class="muted">Sign in with WeldSuite. A short code in the browser confirms this computer.</p>
-      <p class="hint error" id="sign-in-error"></p>
-      <p class="sign-in-code" id="sign-in-code" hidden>
-        Confirm this code: <strong></strong>
-      </p>
+      <div class="card">
+        <p class="muted">Sign in with WeldSuite. A short code in the browser confirms this computer.</p>
+        <div class="row actions">
+          <button id="sign-in" class="primary">Sign in</button>
+        </div>
+        <p class="hint error" id="sign-in-error"></p>
+        <p class="sign-in-code" id="sign-in-code" hidden>
+          Confirm this code: <strong></strong>
+        </p>
+      </div>
     </section>
   `;
 }
 
 function dictionaryMarkup(): string {
   return `
-    <section class="group dictionary">
+    <section class="block dictionary">
       <h2>Dictionary</h2>
-      <p class="muted">Names, alloys and jargon the mic should not guess at.</p>
-      <form id="term-form" class="term-form">
-        <input id="term-input" type="text" maxlength="128" placeholder="Add a word or phrase" autocomplete="off" />
-        <input id="sounds-input" type="text" maxlength="128" placeholder="Sounds like (optional)" autocomplete="off" />
-        <button class="primary" type="submit">Add</button>
-      </form>
-      <p class="hint error" id="term-error"></p>
-      <ul id="term-list" class="term-list"></ul>
+      <div class="card">
+        <p class="muted">Names, alloys and jargon the mic should not guess at.</p>
+        <form id="term-form" class="term-form">
+          <input id="term-input" type="text" maxlength="128" placeholder="Add a word or phrase" autocomplete="off" />
+          <input id="sounds-input" type="text" maxlength="128" placeholder="Sounds like (optional)" autocomplete="off" />
+          <button class="primary" type="submit">Add</button>
+        </form>
+        <p class="hint error" id="term-error"></p>
+        <ul id="term-list" class="term-list"></ul>
+      </div>
     </section>
   `;
+}
+
+function bindUpdate(root: HTMLElement): void {
+  const button = root.querySelector<HTMLButtonElement>("#check-update");
+  const hint = root.querySelector<HTMLElement>("#update-hint");
+  if (!button) return;
+
+  button.addEventListener("click", async () => {
+    if (hint) {
+      hint.textContent = "";
+      hint.classList.remove("error");
+    }
+    button.disabled = true;
+    button.textContent = "Checking…";
+    try {
+      const message = await invoke<string>("install_update");
+      if (hint) hint.textContent = message;
+    } catch (error) {
+      if (hint) {
+        hint.textContent =
+          typeof error === "string"
+            ? error
+            : error instanceof Error
+              ? error.message
+              : "Could not check for an update.";
+        hint.classList.add("error");
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = "Update";
+    }
+  });
 }
 
 function bindSignIn(root: HTMLElement): void {

@@ -128,6 +128,7 @@ pub fn run() {
             commands::list_dictionary,
             commands::add_dictionary_term,
             commands::delete_dictionary_term,
+            updater::install_update,
         ])
         .setup(|app| {
             // Accessory activation policy: WeldSpeak is a tray utility, and a

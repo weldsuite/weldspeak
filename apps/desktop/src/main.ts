@@ -9,6 +9,7 @@ const root = document.getElementById("app")!;
 // The overlay is a second window of the same bundle. Identify it by label,
 // not by URL hash: production WebView2 often drops the hash.
 if (getCurrentWindow().label === "overlay") {
+  document.documentElement.classList.add("overlay-window");
   document.body.classList.add("overlay-window");
   mountOverlay(root);
 } else {

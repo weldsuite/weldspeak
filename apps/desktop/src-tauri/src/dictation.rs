@@ -94,6 +94,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             Action::StartStreaming => start_streaming(app),
             Action::SendStop => {
                 send(app, Outbound::Control(ClientFrame::Stop));
+                crate::overlay::show_partial(app, "");
                 let _ = app.emit("weldspeak://thinking", ());
             }
             Action::SendCancel => {
@@ -230,6 +231,7 @@ fn handle_server_event(app: &AppHandle, event: ServerEvent) {
             ServerEvent::Partial { text } => {
                 // Display only. Partials are revised as the recognizer gets more
                 // context; injecting one would type a word the user did not say.
+                crate::overlay::show_partial(app, &text);
                 let _ = app.emit("weldspeak://partial", text);
                 Vec::new()
             }
