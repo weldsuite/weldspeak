@@ -2,16 +2,22 @@
 //!
 //! Tauri's global-shortcut plugin is built on `RegisterHotKey` / `CGEvent`,
 //! which do not reliably report a **modifier held on its own** (Right Ctrl,
-//! Right Option). Those are exactly the keys a dictation app should use, so
-//! push-to-talk is observed through a platform hook instead: `WH_KEYBOARD_LL`
-//! on Windows, `NSEvent` monitors on macOS.
+//! Right Option). Those are exactly the keys a dictation app should use.
+//!
+//! Detection is a short poll of the physical key state (`GetAsyncKeyState` /
+//! `CGEventSourceKeyState`). A `WH_KEYBOARD_LL` callback is too easy for
+//! Windows to skip or silently unhook — especially while our own WebView2
+//! settings window, or Chrome, has focus — and calling into Tauri from that
+//! callback is enough work to trip the system's hook timeout.
 //!
 //! A note on defaults: holding **Fn** is the gesture everyone asks for, and on
 //! macOS it is the one key a normal event tap does not deliver. The defaults
 //! are Right Option on macOS and Right Ctrl on Windows.
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::OnceLock;
+use std::time::Duration;
 use tauri::AppHandle;
 
 #[cfg(target_os = "windows")]
@@ -24,11 +30,18 @@ mod platform;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod platform {
-    pub fn install(_app: tauri::AppHandle) {}
+    pub fn is_down(_key: super::PttKey) -> bool {
+        false
+    }
 }
 
-/// Encoded `PttKey` observed by the platform hook. 0 means none yet.
+static APP: OnceLock<AppHandle> = OnceLock::new();
+/// Encoded `PttKey` observed by the poll loop. 0 means none yet.
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+static HELD: AtomicBool = AtomicBool::new(false);
+/// Set when the user picks a different hold key so a still-held previous key
+/// cannot keep a dictation open.
+static CANCEL_HOLD: AtomicBool = AtomicBool::new(false);
 
 /// How the hotkey behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -102,6 +115,13 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
         ));
     }
 
+    if PttKey::parse(accelerator).is_none() {
+        return Err(
+            "Choose a hold key from the list. Combinations such as Ctrl+Space cannot be held on their own."
+                .into(),
+        );
+    }
+
     Ok(())
 }
 
@@ -143,19 +163,57 @@ impl PttKey {
     }
 }
 
-/// Start the platform hook. Safe to call once, at launch.
+/// Start watching the hold key. Safe to call once, at launch.
 pub fn install(app: &AppHandle) {
-    platform::install(app.clone());
+    let _ = APP.set(app.clone());
+    std::thread::Builder::new()
+        .name("weldspeak-ptt".into())
+        .spawn(poll_loop)
+        .expect("failed to start push-to-talk");
 }
 
-/// Point the hook at the key currently chosen in Settings.
+/// Point the watcher at the key currently chosen in Settings.
 pub fn listen_for(accelerator: &str) {
     let code = PttKey::parse(accelerator).map(|key| key as u8).unwrap_or(0);
-    CURRENT.store(code, Ordering::Relaxed);
+    CURRENT.store(code, Ordering::SeqCst);
+    CANCEL_HOLD.store(true, Ordering::SeqCst);
 }
 
 pub(crate) fn current_key() -> Option<PttKey> {
     PttKey::from_u8(CURRENT.load(Ordering::Relaxed))
+}
+
+fn poll_loop() {
+    tracing::info!("push-to-talk key watcher started");
+    loop {
+        let cancel = CANCEL_HOLD.swap(false, Ordering::SeqCst);
+        let down = if cancel {
+            false
+        } else {
+            current_key().is_some_and(platform::is_down)
+        };
+        let was = HELD.swap(down, Ordering::SeqCst);
+        if down != was {
+            dispatch(down);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn dispatch(down: bool) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    let app = app.clone();
+    if let Err(error) = app.clone().run_on_main_thread(move || {
+        if down {
+            crate::dictation::begin(&app);
+        } else {
+            crate::dictation::end(&app);
+        }
+    }) {
+        tracing::warn!(%error, "could not dispatch push-to-talk");
+    }
 }
 
 /// Whether an accelerator names a single character-producing key.
@@ -196,13 +254,20 @@ mod tests {
     }
 
     #[test]
-    fn accepts_modifiers_and_combinations() {
-        for accelerator in ["AltRight", "ControlRight", "CommandOrControl+Space", "F13"] {
+    fn accepts_the_keys_settings_offers() {
+        for accelerator in ["AltRight", "ControlRight", "ControlLeft", "F8", "F13"] {
             assert!(
                 validate_for_push_to_talk(accelerator).is_ok(),
                 "{accelerator} should be allowed"
             );
         }
+    }
+
+    #[test]
+    fn rejects_plugin_style_chords() {
+        // The old shortcut plugin accepted these, but a chord cannot be held
+        // as push-to-talk and the watcher would silently ignore it.
+        assert!(validate_for_push_to_talk("CommandOrControl+Space").is_err());
     }
 
     #[test]

@@ -71,6 +71,7 @@ impl Settings {
             Err(_) => Self::default(),
         };
         settings.migrate_api_base();
+        settings.migrate_hotkey();
         settings
     }
 
@@ -88,6 +89,12 @@ impl Settings {
         let trimmed = self.api_base.trim_end_matches('/');
         if LEGACY_API_BASES.contains(&trimmed) {
             self.api_base = DEFAULT_API_BASE.into();
+        }
+    }
+
+    fn migrate_hotkey(&mut self) {
+        if crate::hotkey::PttKey::parse(&self.hotkey.accelerator).is_none() {
+            self.hotkey = crate::hotkey::Binding::default();
         }
     }
 }
@@ -149,6 +156,28 @@ mod tests {
 
         let settings = Settings::load(&path);
         assert_eq!(settings.api_base, DEFAULT_API_BASE);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replaces_an_unholdable_hotkey() {
+        // An older shortcut-plugin chord would leave the watcher with nothing
+        // to listen for, so hold-to-talk appeared dead.
+        let dir = std::env::temp_dir().join(format!("weldspeak-settings-hk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":{"mode":"pushToTalk","accelerator":"CommandOrControl+Space"}}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(
+            settings.hotkey.accelerator,
+            crate::hotkey::default_accelerator()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

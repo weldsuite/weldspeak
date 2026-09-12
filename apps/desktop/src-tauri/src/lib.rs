@@ -163,7 +163,7 @@ pub fn run() {
 
             overlay::prepare(&handle)?;
             hotkey::install(&handle);
-            register_hotkey(&handle)?;
+            reregister_hotkey(&handle);
             updater::spawn(handle.clone());
 
             Ok(())
@@ -265,13 +265,7 @@ fn show_settings(app: &AppHandle) {
     }
 }
 
-/// Register the configured hotkey.
-fn register_hotkey(app: &AppHandle) -> tauri::Result<()> {
-    reregister_hotkey(app);
-    Ok(())
-}
-
-/// Point the platform hook at the key currently in settings.
+/// Point the platform watcher at the key currently in settings.
 ///
 /// The Tauri shortcut plugin is still loaded (other capabilities use it) but
 /// is not how push-to-talk is observed: a modifier held on its own never

@@ -105,10 +105,9 @@ pub fn update_settings(
     patch: serde_json::Value,
 ) -> Result<Settings, String> {
     let path = crate::settings::path_for(&app)?;
-    let previous_accelerator;
+    let hotkey_touched = patch.get("hotkey").is_some();
     let next = {
         let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
-        previous_accelerator = settings.hotkey.accelerator.clone();
 
         let mut merged = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
         if let (Some(target), Some(source)) = (merged.as_object_mut(), patch.as_object()) {
@@ -124,7 +123,7 @@ pub fn update_settings(
         settings.clone()
     };
 
-    if next.hotkey.accelerator != previous_accelerator {
+    if hotkey_touched {
         crate::reregister_hotkey(&app);
     }
 
