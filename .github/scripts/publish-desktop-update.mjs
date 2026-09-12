@@ -1,8 +1,9 @@
 /**
  * Publish the rolling `desktop` GitHub Release and the updater manifest.
  *
- * The updater plugin reads `latest.json` from that release. Both platform
- * jobs must succeed first so the file always lists a complete set of URLs.
+ * The updater plugin reads `latest.json` from that release. Publish whichever
+ * signed platforms this run produced — Windows users should not wait on macOS
+ * updater artifacts, and vice versa.
  */
 
 import { readdir, readFile, writeFile } from "node:fs/promises";
@@ -27,41 +28,53 @@ const macSig = files.find((file) => /\.app\.tar\.gz\.sig$/i.test(file.name));
 const versionMatch = (windowsSetup ?? macArchive)?.name.match(/_(\d+\.\d+\.\d+)_/);
 const version = versionMatch?.[1];
 
-if (!windowsSetup || !windowsSig || !macArchive || !macSig || !version) {
-  console.log("Skipping updater release: signed artifacts for both platforms were not present.");
-  process.exit(0);
+const platforms = {};
+const upload = [];
+
+if (windowsSetup && windowsSig) {
+  platforms["windows-x86_64"] = {
+    url: `${BASE}/${windowsSetup.name}`,
+    signature: (await readFile(windowsSig.path, "utf8")).trim(),
+  };
+  upload.push(windowsSetup.path, windowsSig.path);
+}
+
+if (macArchive && macSig) {
+  platforms["darwin-aarch64"] = {
+    url: `${BASE}/${macArchive.name}`,
+    signature: (await readFile(macSig.path, "utf8")).trim(),
+  };
+  upload.push(macArchive.path, macSig.path);
+}
+
+if (!version || Object.keys(platforms).length === 0) {
+  console.error(
+    "No signed updater artifacts to publish. Windows needs x64-setup.exe + .sig; macOS needs .app.tar.gz + .sig.",
+  );
+  process.exit(1);
 }
 
 const latest = {
   version,
   notes: "Latest WeldSpeak desktop build.",
   pub_date: new Date().toISOString(),
-  platforms: {
-    "windows-x86_64": {
-      url: `${BASE}/${windowsSetup.name}`,
-      signature: (await readFile(windowsSig.path, "utf8")).trim(),
-    },
-    "darwin-aarch64": {
-      url: `${BASE}/${macArchive.name}`,
-      signature: (await readFile(macSig.path, "utf8")).trim(),
-    },
-  },
+  platforms,
 };
 
 const latestPath = path.join(ROOT, "latest.json");
 await writeFile(latestPath, `${JSON.stringify(latest, null, 2)}\n`);
+upload.push(latestPath);
 
-const installers = files.filter((file) => /\.(exe|dmg)$/i.test(file.name));
-const upload = [
-  windowsSetup.path,
-  windowsSig.path,
-  macArchive.path,
-  macSig.path,
-  ...installers
-    .filter((file) => file.path !== windowsSetup.path)
-    .map((file) => file.path),
-  latestPath,
-];
+const already = new Set(upload);
+for (const file of files) {
+  if (/\.(exe|dmg)$/i.test(file.name) && !already.has(file.path)) {
+    upload.push(file.path);
+  }
+}
+
+console.log(
+  `Publishing WeldSpeak ${version} for ${Object.keys(platforms).join(", ")}`,
+);
 
 try {
   execFileSync("gh", ["release", "delete", TAG, "--yes", "--cleanup-tag"], {

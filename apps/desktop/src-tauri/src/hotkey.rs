@@ -10,16 +10,16 @@
 //! settings window, or Chrome, has focus — and calling into Tauri from that
 //! callback is enough work to trip the system's hook timeout.
 //!
-//! Bindings are KeyboardEvent `code` strings (`ControlRight`, `KeyA`, `F8`)
-//! captured in Settings, then polled by native code.
+//! Bindings are KeyboardEvent `code` strings (`ControlRight`, `KeyA`, or
+//! `ControlRight+MetaLeft`) captured in Settings, then polled by native code.
 
 #[path = "hotkey_codes.rs"]
 mod codes;
 
-pub use codes::{label, native_code, types_while_held};
+pub use codes::{label, parse_codes, types_while_held};
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -43,8 +43,9 @@ mod platform {
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
-/// Native key currently watched. 0 means none.
-static CURRENT: AtomicU16 = AtomicU16::new(0);
+/// Packed native codes currently watched. Low 16 bits = first key, high 16 bits
+/// = second key (0 when the binding is a single key). 0 means none.
+static CURRENT: AtomicU32 = AtomicU32::new(0);
 /// True while Settings is capturing a new key, so that press is not a dictation.
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// Set when the user picks a different hold key so a still-held previous key
@@ -70,7 +71,7 @@ pub enum Mode {
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
     pub mode: Mode,
-    /// KeyboardEvent `code`, e.g. `ControlRight` or `F8`.
+    /// KeyboardEvent `code`s, e.g. `ControlRight` or `ControlRight+MetaLeft`.
     pub accelerator: String,
 }
 
@@ -105,26 +106,27 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
         return Err("Choose a key to hold.".into());
     }
 
-    if accelerator.eq_ignore_ascii_case("Fn") || accelerator.eq_ignore_ascii_case("Function") {
-        return Err(
-            "macOS does not report the Fn key to applications. Try holding Right Option instead."
-                .into(),
-        );
+    let parts = codes::parts(accelerator);
+    if parts.is_empty() {
+        return Err("Choose a key to hold.".into());
+    }
+    if parts.len() > 2 {
+        return Err("Hold at most two keys together.".into());
     }
 
-    if accelerator.eq_ignore_ascii_case("Escape") {
-        return Err("Escape cancels a dictation. Pick another key to hold.".into());
+    for part in &parts {
+        if part.eq_ignore_ascii_case("Fn") || part.eq_ignore_ascii_case("Function") {
+            return Err(
+                "macOS does not report the Fn key to applications. Try holding Right Option instead."
+                    .into(),
+            );
+        }
+        if part.eq_ignore_ascii_case("Escape") {
+            return Err("Escape cancels a dictation. Pick another key to hold.".into());
+        }
     }
 
-    // Old plugin-style chords cannot be polled as a single physical key.
-    if accelerator.contains('+') {
-        return Err(
-            "Combinations such as Ctrl+Space cannot be held on their own. Press a single key."
-                .into(),
-        );
-    }
-
-    if native_code(accelerator).is_none() {
+    if parse_codes(accelerator).is_none() {
         return Err("That key cannot be watched on this computer. Try another.".into());
     }
 
@@ -154,9 +156,27 @@ pub fn install(app: &AppHandle) {
 
 /// Point the watcher at the key currently chosen in Settings.
 pub fn listen_for(accelerator: &str) {
-    let code = native_code(accelerator).unwrap_or(0);
-    CURRENT.store(code, Ordering::SeqCst);
+    let packed = parse_codes(accelerator)
+        .map(|(first, second)| pack(first, second))
+        .unwrap_or(0);
+    CURRENT.store(packed, Ordering::SeqCst);
     CANCEL_HOLD.store(true, Ordering::SeqCst);
+}
+
+fn pack(first: u16, second: u16) -> u32 {
+    u32::from(first) | (u32::from(second) << 16)
+}
+
+fn binding_down(packed: u32) -> bool {
+    let first = packed as u16;
+    let second = (packed >> 16) as u16;
+    if first == 0 {
+        return false;
+    }
+    if !platform::is_down(first) {
+        return false;
+    }
+    second == 0 || platform::is_down(second)
 }
 
 /// Ignore the hold key while Settings is capturing a replacement.
@@ -186,8 +206,8 @@ fn poll_loop() {
     loop {
         let cancel = CANCEL_HOLD.swap(false, Ordering::SeqCst);
         let suspended = SUSPENDED.load(Ordering::Relaxed);
-        let code = CURRENT.load(Ordering::Relaxed);
-        let key_down = !cancel && !suspended && code != 0 && platform::is_down(code);
+        let packed = CURRENT.load(Ordering::Relaxed);
+        let key_down = !cancel && !suspended && binding_down(packed);
         let escape = !suspended && platform::is_escape_down();
         let now = Instant::now();
 
@@ -312,7 +332,16 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn accepts_letters_and_function_keys() {
-        for accelerator in ["AltRight", "ControlRight", "F8", "F13", "KeyA", "Space", "F5"] {
+        for accelerator in [
+            "AltRight",
+            "ControlRight",
+            "F8",
+            "F13",
+            "KeyA",
+            "Space",
+            "F5",
+            "ControlRight+MetaLeft",
+        ] {
             assert!(
                 validate_for_push_to_talk(accelerator).is_ok(),
                 "{accelerator} should be allowed"
@@ -323,7 +352,19 @@ mod tests {
     #[test]
     fn warns_that_letters_will_type() {
         assert!(hold_warning("KeyA").is_some());
+        assert!(hold_warning("ControlRight+KeyA").is_some());
         assert!(hold_warning("ControlRight").is_none());
+    }
+
+    #[test]
+    fn accepts_two_keys_held_together() {
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            assert!(validate_for_push_to_talk("ControlRight+MetaLeft").is_ok());
+            assert!(validate_for_push_to_talk("ControlLeft+AltLeft").is_ok());
+        }
+        assert!(validate_for_push_to_talk("ControlRight+ControlRight").is_err());
+        assert!(validate_for_push_to_talk("Escape+ControlRight").is_err());
     }
 
     #[test]

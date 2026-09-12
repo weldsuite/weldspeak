@@ -47,7 +47,7 @@ async fn run(app: &AppHandle) -> Result<bool, String> {
 
     let result = check_and_install(app).await;
     IN_FLIGHT.store(false, Ordering::SeqCst);
-    result
+    result.map_err(explain)
 }
 
 async fn check_and_install(app: &AppHandle) -> Result<bool, String> {
@@ -72,4 +72,12 @@ async fn check_and_install(app: &AppHandle) -> Result<bool, String> {
         .map_err(|error| error.to_string())?;
 
     Ok(true)
+}
+
+fn explain(error: String) -> String {
+    if error.contains("valid release JSON") {
+        "Could not read the update feed. Try again after the next desktop build lands.".into()
+    } else {
+        error
+    }
 }

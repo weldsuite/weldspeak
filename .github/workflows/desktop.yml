@@ -36,7 +36,8 @@ jobs:
             updater: target/release/bundle/nsis/*.sig
           - name: macOS
             os: macos-latest
-            args: --bundles dmg
+            # `app` is required for updater signatures; dmg is the downloadable installer.
+            args: --bundles app,dmg
             artifact: target/release/bundle/dmg/*.dmg
             updater: |
               target/release/bundle/macos/*.tar.gz

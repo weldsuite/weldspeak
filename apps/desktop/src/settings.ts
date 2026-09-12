@@ -68,6 +68,7 @@ let bindKeyListener: ((event: KeyboardEvent) => void) | null = null;
 export async function mountSettings(root: HTMLElement): Promise<void> {
   if (bindKeyListener) {
     window.removeEventListener("keydown", bindKeyListener, true);
+    window.removeEventListener("keyup", bindKeyListener, true);
     bindKeyListener = null;
   }
 
@@ -100,7 +101,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
           <div class="row">
             <span class="row-copy">
               Hold to talk
-              <small>Click, then press any key. Double-tap for hands-free. Esc cancels.</small>
+              <small>Click, then press one key or two together. Double-tap for hands-free. Esc cancels.</small>
             </span>
             <button id="bind-key" class="bind-key" type="button">${escapeHtml(keyLabel)}</button>
           </div>
@@ -174,11 +175,13 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     </main>
   `;
 
-  const hint = root.querySelector<HTMLElement>("#hotkey-hint")!;
+  let hint = root.querySelector<HTMLElement>("#hotkey-hint")!;
   const injection = root.querySelector<HTMLSelectElement>("#injection")!;
   injection.value = settings.injection;
   let currentKey = settings.hotkey.accelerator;
   let capturing = false;
+  const held = new Set<string>();
+  let peak: string[] = [];
 
   const save = async (patch: Partial<Settings>) => {
     await invoke("update_settings", { patch });
@@ -216,6 +219,8 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
 
   const stopCapture = async () => {
     capturing = false;
+    held.clear();
+    peak = [];
     await invoke("suspend_hotkey", { paused: false });
     const button = root.querySelector<HTMLButtonElement>("#bind-key");
     if (button) {
@@ -226,14 +231,28 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
 
   const startCapture = async () => {
     capturing = true;
+    held.clear();
+    peak = [];
     await invoke("suspend_hotkey", { paused: true });
     const button = root.querySelector<HTMLButtonElement>("#bind-key");
     if (button) {
       button.dataset.listening = "true";
       button.textContent = "Press a key…";
     }
-    hint.textContent = "Press the key you want to hold. Esc cancels.";
+    hint.textContent = "Press one key, or two together. Esc cancels.";
     hint.classList.remove("error");
+  };
+
+  const showPeak = async () => {
+    const button = root.querySelector<HTMLButtonElement>("#bind-key");
+    if (!button) return;
+    if (peak.length === 0) {
+      button.textContent = "Press a key…";
+      return;
+    }
+    button.textContent = await invoke<string>("hotkey_label", {
+      accelerator: peak.join("+"),
+    });
   };
 
   root.querySelector("#bind-key")?.addEventListener("click", () => {
@@ -245,12 +264,30 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
     if (event.code === "Escape") {
+      held.clear();
+      peak = [];
       void stopCapture();
       return;
     }
-    void applyKey(event.code).then(() => stopCapture());
+    if (event.repeat) return;
+    if (event.type === "keydown") {
+      if (held.size === 0) peak = [];
+      held.add(event.code);
+      if (!peak.includes(event.code) && peak.length < 2) peak.push(event.code);
+      void showPeak();
+      return;
+    }
+    if (event.type === "keyup") {
+      held.delete(event.code);
+      if (held.size === 0 && peak.length > 0) {
+        const accelerator = peak.join("+");
+        peak = [];
+        void applyKey(accelerator).then(() => stopCapture());
+      }
+    }
   };
   window.addEventListener("keydown", bindKeyListener, true);
+  window.addEventListener("keyup", bindKeyListener, true);
 
   injection.addEventListener("change", () =>
     save({ injection: injection.value as Settings["injection"] }),

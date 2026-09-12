@@ -4,6 +4,35 @@
 //! so a binding is the same string on every OS. This module turns that string
 //! into the value `GetAsyncKeyState` / `CGEventSourceKeyState` actually poll.
 
+/// KeyboardEvent `code` parts in a binding (`ControlRight` or `ControlRight+MetaLeft`).
+pub fn parts(accelerator: &str) -> Vec<&str> {
+    accelerator
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// Native codes to poll. The second is `0` when the binding is a single key.
+pub fn parse_codes(accelerator: &str) -> Option<(u16, u16)> {
+    let parts = parts(accelerator);
+    if parts.is_empty() || parts.len() > 2 {
+        return None;
+    }
+    let first = native_code(parts[0])?;
+    if first == 0 {
+        return None;
+    }
+    if parts.len() == 1 {
+        return Some((first, 0));
+    }
+    let second = native_code(parts[1])?;
+    if second == 0 || second == first {
+        return None;
+    }
+    Some((first, second))
+}
+
 /// Native scan/virtual-key for `code`, if this OS can watch it.
 pub fn native_code(code: &str) -> Option<u16> {
     #[cfg(target_os = "windows")]
@@ -23,7 +52,11 @@ pub fn native_code(code: &str) -> Option<u16> {
 
 /// Keys that still type into the focused app while held, because we poll
 /// rather than swallow the event. Allowed, but Settings should warn.
-pub fn types_while_held(code: &str) -> bool {
+pub fn types_while_held(accelerator: &str) -> bool {
+    parts(accelerator).into_iter().any(part_types)
+}
+
+fn part_types(code: &str) -> bool {
     let code = code.trim();
     code.starts_with("Key")
         || code.starts_with("Digit")
@@ -51,7 +84,16 @@ pub fn types_while_held(code: &str) -> bool {
 }
 
 /// Short label for Settings and the window subtitle.
-pub fn label(code: &str) -> String {
+pub fn label(accelerator: &str) -> String {
+    let labeled: Vec<String> = parts(accelerator).into_iter().map(label_one).collect();
+    if labeled.is_empty() {
+        "None".into()
+    } else {
+        labeled.join(" + ")
+    }
+}
+
+fn label_one(code: &str) -> String {
     match code.trim() {
         "ControlRight" => "Right Ctrl".into(),
         "ControlLeft" => "Left Ctrl".into(),
@@ -328,13 +370,27 @@ mod tests {
         assert_eq!(label("KeyA"), "A");
         assert_eq!(label("F8"), "F8");
         assert_eq!(label("Space"), "Space");
+        assert!(label("ControlRight+MetaLeft").contains("Right Ctrl"));
+        assert!(label("ControlRight+MetaLeft").contains(" + "));
     }
 
     #[test]
     fn letters_type_while_held() {
         assert!(types_while_held("KeyA"));
         assert!(types_while_held("Space"));
+        assert!(types_while_held("ControlRight+KeyA"));
         assert!(!types_while_held("ControlRight"));
         assert!(!types_while_held("F8"));
+        assert!(!types_while_held("ControlRight+MetaLeft"));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    fn parses_one_or_two_physical_keys() {
+        assert!(parse_codes("ControlRight").is_some());
+        assert!(parse_codes("ControlRight+MetaLeft").is_some());
+        assert!(parse_codes("CommandOrControl+Space").is_none());
+        assert!(parse_codes("ControlRight+ControlRight").is_none());
+        assert!(parse_codes("ControlRight+MetaLeft+ShiftLeft").is_none());
     }
 }

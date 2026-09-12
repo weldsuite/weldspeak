@@ -113,7 +113,7 @@ impl Settings {
     }
 
     fn migrate_hotkey(&mut self) {
-        if crate::hotkey::native_code(&self.hotkey.accelerator).is_none() {
+        if crate::hotkey::parse_codes(&self.hotkey.accelerator).is_none() {
             self.hotkey = crate::hotkey::Binding::default();
         }
     }
@@ -199,6 +199,24 @@ mod tests {
             settings.hotkey.accelerator,
             crate::hotkey::default_accelerator()
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_a_two_key_hold() {
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-chord-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":{"mode":"pushToTalk","accelerator":"ControlRight+MetaLeft"}}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(settings.hotkey.accelerator, "ControlRight+MetaLeft");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

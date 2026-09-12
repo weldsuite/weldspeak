@@ -9,10 +9,10 @@ use std::time::Duration;
 use tauri::window::Color;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, WebviewWindow};
 
-/// Waveform only — the Wispr-sized capsule. Grows when partials or notices need type.
+/// Waveform-only capsule. It does not grow with speech; notices may widen.
 const COMPACT_SIZE: LogicalSize<f64> = LogicalSize {
-    width: 96.0,
-    height: 48.0,
+    width: 72.0,
+    height: 34.0,
 };
 
 use crate::audio::Capture;
@@ -44,7 +44,7 @@ fn notice_size(message: &str) -> LogicalSize<f64> {
     let width = (92.0 + message.len() as f64 * 6.8).clamp(132.0, 320.0);
     LogicalSize {
         width,
-        height: 48.0,
+        height: 34.0,
     }
 }
 
@@ -70,22 +70,6 @@ pub fn appear_listening(app: &AppHandle) {
         reveal(app, &window, COMPACT_SIZE);
     }
     let _ = app.emit("weldspeak://listening", ());
-}
-
-/// Stretch the capsule just enough for the last few recognised words.
-pub fn show_partial(app: &AppHandle, preview: &str) {
-    let shown = last_words(preview, 6);
-    if let Some(window) = window(app) {
-        let size = notice_size(&shown);
-        let _ = window.set_size(Size::Logical(size));
-        position_over_cursor(app, &window, size);
-    }
-}
-
-fn last_words(text: &str, n: usize) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let start = words.len().saturating_sub(n);
-    words[start..].join(" ")
 }
 
 pub fn show_notice(app: &AppHandle, message: &str) {

@@ -69,19 +69,20 @@ body.overlay-window {
 .pill {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  height: 36px;
+  height: 26px;
   margin: 0;
   padding: 0 12px;
-  width: calc(100% - 12px);
-  max-width: calc(100% - 12px);
-  border-radius: 18px;
+  width: calc(100% - 8px);
+  max-width: calc(100% - 8px);
+  border-radius: 13px;
   background: rgba(22, 22, 24, 0.92);
   color: #f5f5f7;
   font-size: 12px;
   font-weight: 500;
   letter-spacing: -0.01em;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
   opacity: 0;
   transition: opacity 90ms ease;
 }
@@ -90,20 +91,31 @@ body.overlay-window {
 .pill[data-phase="thinking"],
 .pill[data-phase="notice"] { opacity: 1; }
 
-.pill[data-phase="listening"] .text:empty { display: none; }
+.pill .text { display: none; }
+.pill[data-phase="notice"] .text {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill[data-phase="notice"] .waveform {
+  display: none;
+}
 
 .waveform {
   display: flex;
   align-items: center;
   gap: 3px;
-  height: 16px;
+  height: 12px;
   flex: none;
 }
 
 .waveform span {
   display: block;
   width: 2px;
-  height: 16px;
+  height: 12px;
   border-radius: 1px;
   background: var(--accent);
   transform: scaleY(0.12);
@@ -111,16 +123,8 @@ body.overlay-window {
   transition: transform 16ms linear;
 }
 
-.pill[data-phase="thinking"] .waveform span,
-.pill[data-phase="notice"] .waveform span {
+.pill[data-phase="thinking"] .waveform span {
   background: #8e8e93;
-}
-
-.text {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* --- Settings: grouped native lists ------------------------------------ */
@@ -405,7 +409,7 @@ button.ghost:hover { color: var(--text); }
 
 .bind-key {
   font-weight: 600;
-  min-width: 108px;
+  min-width: 132px;
   text-align: center;
 }
 
