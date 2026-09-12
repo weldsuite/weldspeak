@@ -22,7 +22,7 @@ import type { Env } from "../src/env.js";
 /** An Env carrying only what cleanup touches, with a scripted model. */
 function envWith(run: (model: string, input: unknown) => Promise<unknown>): Env {
   return {
-    CLEANUP_MODEL: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    CLEANUP_MODEL: "@cf/zai-org/glm-4.7-flash",
     AI: { run: (model: string, input: unknown) => run(model, input) },
   } as unknown as Env;
 }
@@ -84,6 +84,12 @@ describe("stripping model chatter", () => {
   it("leaves clean text untouched", () => {
     expect(stripModelChatter("The weld looks good.")).toBe("The weld looks good.");
   });
+
+  it("drops a thinking trace if the model ignored enable_thinking: false", () => {
+    expect(stripModelChatter("<think>fix punctuation</think>\nThe weld looks good.")).toBe(
+      "The weld looks good.",
+    );
+  });
 });
 
 describe("reply detection", () => {
@@ -116,6 +122,15 @@ describe("cleanup", () => {
     expect(result).toEqual({ text: "The weld looks good.", formatted: true });
   });
 
+  it("reads the chat-completions response shape GLM returns", async () => {
+    const env = envWith(async () => ({
+      choices: [{ message: { content: "The weld looks good." } }],
+    }));
+    const result = await cleanupTranscript(env, "um the weld looks uh good", []);
+
+    expect(result).toEqual({ text: "The weld looks good.", formatted: true });
+  });
+
   it("passes the configured model and a low temperature", async () => {
     let seenModel = "";
     let seenInput: Record<string, unknown> = {};
@@ -128,10 +143,14 @@ describe("cleanup", () => {
 
     await cleanupTranscript(env, "hello", []);
 
-    expect(seenModel).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(seenModel).toBe("@cf/zai-org/glm-4.7-flash");
     // Cleanup is a rewrite, not a creative task; near-greedy decoding stops the
     // model paraphrasing what it was told to preserve.
     expect(seenInput.temperature).toBeLessThanOrEqual(0.2);
+    expect(
+      (seenInput.chat_template_kwargs as { enable_thinking?: boolean } | undefined)
+        ?.enable_thinking,
+    ).toBe(false);
     const messages = seenInput.messages as Array<{ content: string }>;
     expect(messages[1]?.content).toContain("<dictation>");
   });

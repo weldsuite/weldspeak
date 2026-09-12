@@ -24,14 +24,15 @@ pub mod snippets;
 pub mod transport;
 pub mod updater;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 use tokio::sync::mpsc::UnboundedSender;
-use weldspeak_core::{AuthStore, Session};
+use weldspeak_core::{AuthStore, Frame, Session};
 
 use transport::Outbound;
 
@@ -43,6 +44,9 @@ pub struct AppState {
     /// The open microphone. Held for the app's lifetime so the pre-roll buffer
     /// always has audio in it when the hotkey goes down.
     pub capture: Mutex<Option<audio::Capture>>,
+    /// Cloneable end of the capture → pump channel. Kept so a microphone
+    /// change can open a new stream without tearing down the pump.
+    pub frames: Mutex<Option<Sender<Frame>>>,
     /// Channel into the dictation currently in progress, if any.
     pub outbound: Mutex<Option<UnboundedSender<Outbound>>>,
     /// True while the listening pill is on screen, so the audio thread can
@@ -52,6 +56,8 @@ pub struct AppState {
     pub last_transcript: Mutex<Option<String>>,
     /// Media we paused or muted for the current dictation.
     pub media: Mutex<media::MediaPause>,
+    /// Settings asked for a different microphone during a dictation.
+    pub mic_dirty: AtomicBool,
 }
 
 impl Default for AppState {
@@ -61,10 +67,12 @@ impl Default for AppState {
             auth: Mutex::new(AuthStore::new()),
             session: Mutex::new(Session::new()),
             capture: Mutex::new(None),
+            frames: Mutex::new(None),
             outbound: Mutex::new(None),
             overlay_live: AtomicBool::new(false),
             last_transcript: Mutex::new(None),
             media: Mutex::new(media::MediaPause::default()),
+            mic_dirty: AtomicBool::new(false),
         }
     }
 }
@@ -131,6 +139,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            commands::list_microphones,
             commands::validate_hotkey,
             commands::open_permission_settings,
             commands::get_status,
@@ -169,16 +178,15 @@ pub fn run() {
             // The microphone opens now and stays open. That is what makes the
             // pre-roll possible, and it keeps device-start latency — a couple of
             // hundred milliseconds on macOS — off the front of every dictation.
+            // The pump starts even if capture fails, so choosing a mic later in
+            // Settings does not need a restart.
             let (frames_tx, frames_rx) = std::sync::mpsc::channel();
-            match audio::Capture::start(frames_tx) {
-                Ok(capture) => {
-                    *handle.state::<AppState>().capture.lock().unwrap() = Some(capture);
-                    dictation::spawn_audio_pump(handle.clone(), frames_rx);
-                }
-                // A refused or missing microphone must not stop the app from
-                // starting: the user needs the settings window to fix it.
-                Err(error) => tracing::error!(?error, "could not open the microphone"),
+            {
+                let state = handle.state::<AppState>();
+                *state.frames.lock().expect("frames poisoned") = Some(frames_tx.clone());
             }
+            dictation::spawn_audio_pump(handle.clone(), frames_rx);
+            reopen_microphone(&handle);
 
             overlay::prepare(&handle)?;
             hotkey::install(&handle);
@@ -191,9 +199,14 @@ pub fn run() {
         .expect("failed to build WeldSpeak")
         .run(|_app, event| {
             // Closing the settings window must not quit: the app lives in the
-            // tray and the hotkey has to keep working.
-            if let RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            // tray and the hotkey has to keep working. Programmatic exits
+            // (tray Quit → app.exit) carry a code and must be allowed through;
+            // otherwise a zombie process keeps the refresh token and the next
+            // launch triggers reuse detection, which signs the user out.
+            if let RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
         });
 }
@@ -220,11 +233,23 @@ fn restore_session(app: &AppHandle) {
 
         match auth::refresh(&api_base, &refresh_token).await {
             Ok(tokens) => {
-                let _ = auth::save_refresh_token(&tokens.refresh_token);
+                // Refresh tokens are single-use. If we fail to persist the
+                // replacement, the next launch will present the old one and
+                // the server will revoke the device.
+                if let Err(error) = auth::save_refresh_token(&tokens.refresh_token) {
+                    tracing::error!(?error, "could not persist credentials after restore");
+                }
+
                 let state = app.state::<AppState>();
                 let mut store = state.auth.lock().expect("auth store poisoned");
                 store.accept(tokens);
                 drop(store);
+
+                // Settings mounts before restore finishes and would stay on
+                // the sign-in panel without this — same event as begin_sign_in.
+                use tauri::Emitter;
+                let _ = app.emit("weldspeak://signed-in", ());
+
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     crate::learn::flush_to_dictionary(&app).await;
@@ -294,6 +319,50 @@ fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+/// Point capture at the microphone currently in settings.
+///
+/// Drops the old stream first so WASAPI releases the device, then opens the
+/// saved name (or the system default). Skipped while a dictation is in
+/// progress so arming is not lost mid-sentence.
+pub(crate) fn reopen_microphone(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let idle = state
+        .session
+        .lock()
+        .map(|session| session.is_idle())
+        .unwrap_or(true);
+    if !idle {
+        state.mic_dirty.store(true, Ordering::SeqCst);
+        tracing::info!("deferring microphone change until dictation ends");
+        return;
+    }
+    state.mic_dirty.store(false, Ordering::SeqCst);
+
+    let preferred = state
+        .settings
+        .lock()
+        .ok()
+        .and_then(|settings| settings.microphone.clone());
+    let Some(frames) = state
+        .frames
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+    else {
+        return;
+    };
+
+    *state.capture.lock().expect("capture poisoned") = None;
+    match audio::Capture::start(frames, preferred) {
+        Ok(capture) => {
+            *state.capture.lock().expect("capture poisoned") = Some(capture);
+        }
+        // A refused or missing microphone must not stop the app: the user
+        // needs the settings window to pick another device.
+        Err(error) => tracing::error!(?error, "could not open the microphone"),
     }
 }
 

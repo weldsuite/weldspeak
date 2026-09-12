@@ -291,6 +291,9 @@ fn teardown(app: &AppHandle) {
 
     crate::overlay::dismiss(app);
     crate::media::resume(app);
+    if state.mic_dirty.load(std::sync::atomic::Ordering::SeqCst) {
+        crate::reopen_microphone(app);
+    }
 }
 
 fn remember_transcript(app: &AppHandle, text: &str) {

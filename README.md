@@ -127,19 +127,9 @@ provisioning.
 
 ### Choosing the cleanup model
 
-`CLEANUP_MODEL` is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Measured against
-the live endpoint, on the same dictated sentence:
-
-| Model                                | Latency    | Within a 700 ms budget | Within 2.5 s |
-| ------------------------------------ | ---------- | ---------------------- | ------------ |
-| `llama-3.3-70b-instruct-fp8-fast`    | 774–958 ms | never                  | always       |
-| `llama-3.1-8b-instruct-fast`         | 284–622 ms | always                 | always       |
-
-The 70B writes better text — unaided, it recovers `Inconel 625` from a
-recognizer's `Conal 625` where the 8B does not. The old 700 ms deadline made
-that a loss every time, so cleanup fell back to the raw transcript and the
-feature was in practice switched off. With a 2.5 s budget the 70B finishes
-with room to spare, so it is the production model.
+`CLEANUP_MODEL` is `@cf/zai-org/glm-4.7-flash`. It is fast enough for the 2.5 s
+cleanup deadline, follows rewrite instructions well, and thinking is turned off
+on the request so a reasoning trace cannot leak into the inserted text.
 
 The glossary still matters for the recognizer: with `Inconel 625` in
 `dictionary_terms`, keyterm boost yields the term before cleanup even runs.

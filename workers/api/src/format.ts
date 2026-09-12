@@ -18,9 +18,9 @@ import type { Env } from "./env.js";
 /**
  * Deadline for the cleanup pass.
  *
- * Long enough for llama-3.3-70b-instruct-fp8-fast (~800–1000 ms measured) to
- * finish punctuation and homophone fixes. The old 700 ms budget made the 70B
- * miss every time, so cleanup fell back to raw speech.
+ * Long enough for GLM-4.7-Flash to finish punctuation and homophone fixes.
+ * Thinking is turned off on the request so the budget is spent on the rewrite,
+ * not a hidden reasoning trace.
  */
 export const CLEANUP_TIMEOUT_MS = 2_500;
 
@@ -105,6 +105,7 @@ ${dictation}`;
 export function stripModelChatter(text: string): string {
   let cleaned = text.trim();
 
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   cleaned = cleaned.replace(
     /^(?:here(?:'s| is) (?:the )?(?:cleaned|corrected|formatted|dictated)[^:\n]*:\s*)/i,
     "",
@@ -168,6 +169,27 @@ export interface CleanupResult {
 }
 
 /**
+ * Pull the rewritten transcript out of either Workers AI response shape.
+ *
+ * Llama models return `{ response }`. GLM-4.7-Flash uses the chat-completions
+ * shape `{ choices: [{ message: { content } }] }`. Treating only the first as
+ * success would make every cleanup miss and ship raw speech.
+ */
+function extractCleanupText(response: unknown): string | null {
+  if (!response || typeof response !== "object") return null;
+
+  const record = response as {
+    response?: unknown;
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+
+  if (typeof record.response === "string") return record.response;
+
+  const content = record.choices?.[0]?.message?.content;
+  return typeof content === "string" ? content : null;
+}
+
+/**
  * Run the cleanup pass, falling back to `raw` on timeout or failure.
  *
  * Never throws: every failure mode degrades to the raw transcript, because
@@ -197,9 +219,12 @@ export async function cleanupTranscript(
         // Cleaned text is never much longer than its input; this caps a runaway
         // generation without truncating legitimate output.
         max_tokens: Math.min(2048, Math.max(512, trimmed.length + 128)),
-      } as never)) as { response?: string };
+        // GLM-4.7-Flash reasons by default. That would eat the deadline and
+        // leak a thinking trace into whatever the user was typing into.
+        chat_template_kwargs: { enable_thinking: false },
+      } as never));
 
-      return typeof response?.response === "string" ? response.response : null;
+      return extractCleanupText(response);
     } catch {
       return null;
     }

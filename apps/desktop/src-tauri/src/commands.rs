@@ -106,6 +106,7 @@ pub fn update_settings(
 ) -> Result<Settings, String> {
     let path = crate::settings::path_for(&app)?;
     let hotkey_touched = patch.get("hotkey").is_some();
+    let microphone_touched = patch.get("microphone").is_some();
     let next = {
         let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
 
@@ -126,8 +127,17 @@ pub fn update_settings(
     if hotkey_touched {
         crate::reregister_hotkey(&app);
     }
+    if microphone_touched {
+        crate::reopen_microphone(&app);
+    }
 
     Ok(next)
+}
+
+/// Input devices currently attached, for the settings picker.
+#[tauri::command]
+pub fn list_microphones() -> Vec<crate::audio::Microphone> {
+    crate::audio::list_input_devices()
 }
 
 /// Check a hotkey, returning a human-readable reason if it will not work.

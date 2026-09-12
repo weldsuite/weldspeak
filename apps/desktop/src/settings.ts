@@ -17,8 +17,14 @@ interface Settings {
   locale: string | null;
   keepHistory: boolean;
   pauseMedia: boolean;
+  microphone: string | null;
   snippets: Array<{ trigger: string; expansion: string }>;
   wordsDictated: number;
+}
+
+interface Microphone {
+  name: string;
+  isDefault: boolean;
 }
 
 interface Status {
@@ -72,10 +78,11 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     bindKeyListener = null;
   }
 
-  const [settings, status, version] = await Promise.all([
+  const [settings, status, version, microphones] = await Promise.all([
     invoke<Settings>("get_settings"),
     invoke<Status>("get_status"),
     getVersion(),
+    invoke<Microphone[]>("list_microphones").catch(() => [] as Microphone[]),
   ]);
 
   const keyLabel = await invoke<string>("hotkey_label", {
@@ -106,6 +113,15 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
             <button id="bind-key" class="bind-key" type="button">${escapeHtml(keyLabel)}</button>
           </div>
           <p class="hint" id="hotkey-hint"></p>
+          <label class="row">
+            <span class="row-copy">
+              Microphone
+              <small>The input WeldSpeak listens on</small>
+            </span>
+            <select id="microphone">
+              ${microphoneOptions(microphones, settings.microphone ?? null)}
+            </select>
+          </label>
           <label class="row">
             <span class="row-copy">
               Clean up speech
@@ -292,6 +308,11 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
   injection.addEventListener("change", () =>
     save({ injection: injection.value as Settings["injection"] }),
   );
+
+  root.querySelector("#microphone")!.addEventListener("change", (event) => {
+    const value = (event.target as HTMLSelectElement).value;
+    void save({ microphone: value ? value : null });
+  });
 
   root.querySelector("#pause-media")!.addEventListener("change", (event) =>
     save({ pauseMedia: (event.target as HTMLInputElement).checked }),
@@ -635,6 +656,25 @@ async function bindDictionary(root: HTMLElement): Promise<void> {
   });
 
   await reload();
+}
+
+function microphoneOptions(mics: Microphone[], selected: string | null): string {
+  const known = new Set(mics.map((mic) => mic.name));
+  const missing =
+    selected && !known.has(selected)
+      ? `<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (unplugged)</option>`
+      : "";
+  return `
+    <option value=""${selected ? "" : " selected"}>System default</option>
+    ${missing}
+    ${mics
+      .map((mic) => {
+        const label = mic.isDefault ? `${mic.name} (default)` : mic.name;
+        const isSelected = selected === mic.name;
+        return `<option value="${escapeHtml(mic.name)}"${isSelected ? " selected" : ""}>${escapeHtml(label)}</option>`;
+      })
+      .join("")}
+  `;
 }
 
 function escapeHtml(value: string): string {

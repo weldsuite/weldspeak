@@ -13,11 +13,60 @@
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream, StreamConfig};
+use serde::Serialize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use weldspeak_core::{Frame, Framer, Resampler};
 use weldspeak_protocol::audio::SAMPLE_RATE;
+
+/// An input device the settings window can offer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microphone {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// Input devices currently attached. An empty list means the host would not
+/// enumerate them; the UI still offers "System default".
+pub fn list_input_devices() -> Vec<Microphone> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+
+    let mut listed: Vec<Microphone> = devices
+        .filter_map(|device| {
+            let name = device.name().ok()?;
+            let is_default = default_name.as_deref() == Some(name.as_str());
+            Some(Microphone { name, is_default })
+        })
+        .collect();
+    listed.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
+    listed
+}
+
+/// Resolve a saved device name, falling back to the system default if it is
+/// missing, empty, or the headset has been unplugged.
+fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    if let Some(name) = preferred.filter(|name| !name.is_empty()) {
+        if let Ok(devices) = host.input_devices() {
+            for device in devices {
+                if device.name().ok().as_deref() == Some(name) {
+                    return Ok(device);
+                }
+            }
+        }
+        tracing::warn!(name, "saved microphone not found; using system default");
+    }
+    host.default_input_device()
+        .ok_or_else(|| anyhow!("no microphone available"))
+}
 
 /// A running capture, conditioning device audio into wire-ready frames.
 ///
@@ -30,7 +79,19 @@ use weldspeak_protocol::audio::SAMPLE_RATE;
 pub struct Capture {
     shared: Arc<Mutex<Pipeline>>,
     level: Arc<AtomicU32>,
-    _shutdown: Sender<()>,
+    shutdown: Option<Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        // Close the stream before another Capture::start opens the same (or
+        // another) device — WASAPI will refuse a second exclusive open.
+        drop(self.shutdown.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 struct Pipeline {
@@ -39,11 +100,13 @@ struct Pipeline {
 }
 
 impl Capture {
-    /// Open the default input device and begin conditioning audio.
+    /// Open an input device and begin conditioning audio.
     ///
-    /// Frames are sent to `frames` only while armed; before that they feed the
-    /// pre-roll buffer and are discarded as they age out.
-    pub fn start(frames: Sender<Frame>) -> Result<Self> {
+    /// `preferred` is a cpal device name from settings; `None` or a name that
+    /// is no longer attached uses the system default. Frames are sent to
+    /// `frames` only while armed; before that they feed the pre-roll buffer
+    /// and are discarded as they age out.
+    pub fn start(frames: Sender<Frame>, preferred: Option<String>) -> Result<Self> {
         let (shutdown, shutdown_rx) = channel::<()>();
         // The audio thread reports whether the device opened, so a missing or
         // refused microphone surfaces here rather than as silence later.
@@ -51,10 +114,10 @@ impl Capture {
         let level = Arc::new(AtomicU32::new(0));
         let level_for_thread = Arc::clone(&level);
 
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("weldspeak-audio".into())
             .spawn(move || {
-                let stream = match Self::open(frames, level_for_thread) {
+                let stream = match Self::open(frames, level_for_thread, preferred.as_deref()) {
                     Ok((stream, shared, level)) => {
                         let _ = ready.send(Ok((shared, level)));
                         stream
@@ -71,8 +134,18 @@ impl Capture {
                 drop(stream);
             })?;
 
-        let (shared, _thread_level) = ready_rx.recv()??;
-        Ok(Self { shared, level, _shutdown: shutdown })
+        match ready_rx.recv()? {
+            Ok((shared, _thread_level)) => Ok(Self {
+                shared,
+                level,
+                shutdown: Some(shutdown),
+                thread: Some(thread),
+            }),
+            Err(error) => {
+                let _ = thread.join();
+                Err(error)
+            }
+        }
     }
 
     /// Instantaneous microphone loudness, 0.0–1.0, for the listening waveform.
@@ -80,15 +153,13 @@ impl Capture {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
-    /// Open the default input device. Runs on the audio thread.
+    /// Open the chosen input device. Runs on the audio thread.
     fn open(
         frames: Sender<Frame>,
         level: Arc<AtomicU32>,
+        preferred: Option<&str>,
     ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU32>)> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("no microphone available"))?;
+        let device = pick_input_device(preferred)?;
 
         let supported = device.default_input_config()?;
         let sample_format = supported.sample_format();

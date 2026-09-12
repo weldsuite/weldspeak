@@ -7,7 +7,7 @@ interface __BaseEnv_Env {
 	AI: Ai;
 	ASSETS: Fetcher;
 	APP_URL: "http://localhost:5173";
-	CLEANUP_MODEL: "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+	CLEANUP_MODEL: "@cf/zai-org/glm-4.7-flash";
 	STT_MODEL: "@cf/deepgram/nova-3";
 	DICTATION: DurableObjectNamespace<import("./src/index").DictationSession>;
 }

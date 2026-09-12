@@ -53,6 +53,10 @@ pub struct Settings {
     #[serde(default = "default_pause_media")]
     pub pause_media: bool,
 
+    /// cpal input device name. None uses the system default microphone.
+    #[serde(default)]
+    pub microphone: Option<String>,
+
     /// Spoken cues that expand to saved text.
     #[serde(default)]
     pub snippets: Vec<Snippet>,
@@ -81,6 +85,7 @@ impl Default for Settings {
             locale: None,
             keep_history: true,
             pause_media: default_pause_media(),
+            microphone: None,
             snippets: Vec::new(),
             corrections: Vec::new(),
             pending_terms: Vec::new(),
@@ -259,6 +264,7 @@ mod tests {
 
         assert_eq!(settings.api_base, "http://localhost:8787");
         assert!(settings.clean_up_text);
+        assert!(settings.microphone.is_none());
     }
 
     #[test]
