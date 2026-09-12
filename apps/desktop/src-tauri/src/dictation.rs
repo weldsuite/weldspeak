@@ -57,6 +57,7 @@ pub fn begin(app: &AppHandle) {
     // Show the pill before the socket is up. Without this, a held key looks
     // like nothing happened — the Wispr Flow complaint.
     crate::overlay::appear_listening(app);
+    crate::media::pause_if_enabled(app);
     perform(app, actions);
 }
 
@@ -102,13 +103,20 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 teardown(app);
             }
             Action::Inject { text } => {
-                let preference = app
-                    .state::<AppState>()
-                    .settings
-                    .lock()
-                    .map(|settings| settings.injection.into())
-                    .unwrap_or_default();
-
+                let (preference, snippets) = {
+                    let state = app.state::<AppState>();
+                    let settings = state.settings.lock().ok();
+                    let preference = settings
+                        .as_ref()
+                        .map(|settings| settings.injection.into())
+                        .unwrap_or_default();
+                    let snippets = settings
+                        .map(|settings| settings.snippets.clone())
+                        .unwrap_or_default();
+                    (preference, snippets)
+                };
+                let text = crate::snippets::expand(&text, &snippets);
+                remember_transcript(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
 
                 // The injector reports completion by driving the machine on;
@@ -279,6 +287,22 @@ fn teardown(app: &AppHandle) {
     }
 
     crate::overlay::dismiss(app);
+    crate::media::resume(app);
+}
+
+fn remember_transcript(app: &AppHandle, text: &str) {
+    let state = app.state::<AppState>();
+    if let Ok(mut last) = state.last_transcript.lock() {
+        *last = Some(text.to_string());
+    }
+    let words = text.split_whitespace().count() as u64;
+    let path = crate::settings::path_for(app).ok();
+    if let Ok(mut settings) = state.settings.lock() {
+        settings.words_dictated = settings.words_dictated.saturating_add(words);
+        if let Some(path) = path {
+            let _ = settings.save(&path);
+        }
+    };
 }
 
 /// Drive the session into its failed state and tell the user.

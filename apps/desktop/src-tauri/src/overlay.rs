@@ -136,7 +136,7 @@ fn hide(app: &AppHandle) {
 
 fn spawn_level_ticker(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        let mut interval = tokio::time::interval(Duration::from_millis(16));
         loop {
             interval.tick().await;
             let state = app.state::<AppState>();

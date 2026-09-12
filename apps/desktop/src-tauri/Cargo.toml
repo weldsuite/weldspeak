@@ -49,4 +49,9 @@ block2 = "0.5"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+  "Media_Control",
+  "Foundation",
+  "Foundation_Collections",
 ] }

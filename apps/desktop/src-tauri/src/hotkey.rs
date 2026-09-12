@@ -10,14 +10,18 @@
 //! settings window, or Chrome, has focus — and calling into Tauri from that
 //! callback is enough work to trip the system's hook timeout.
 //!
-//! A note on defaults: holding **Fn** is the gesture everyone asks for, and on
-//! macOS it is the one key a normal event tap does not deliver. The defaults
-//! are Right Option on macOS and Right Ctrl on Windows.
+//! Bindings are KeyboardEvent `code` strings (`ControlRight`, `KeyA`, `F8`)
+//! captured in Settings, then polled by native code.
+
+#[path = "hotkey_codes.rs"]
+mod codes;
+
+pub use codes::{label, native_code, types_while_held};
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 #[cfg(target_os = "windows")]
@@ -30,18 +34,25 @@ mod platform;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod platform {
-    pub fn is_down(_key: super::PttKey) -> bool {
+    pub fn is_down(_code: u16) -> bool {
+        false
+    }
+    pub fn is_escape_down() -> bool {
         false
     }
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
-/// Encoded `PttKey` observed by the poll loop. 0 means none yet.
-static CURRENT: AtomicU8 = AtomicU8::new(0);
-static HELD: AtomicBool = AtomicBool::new(false);
+/// Native key currently watched. 0 means none.
+static CURRENT: AtomicU16 = AtomicU16::new(0);
+/// True while Settings is capturing a new key, so that press is not a dictation.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// Set when the user picks a different hold key so a still-held previous key
 /// cannot keep a dictation open.
 static CANCEL_HOLD: AtomicBool = AtomicBool::new(false);
+
+const HOLD_BEFORE_PTT: Duration = Duration::from_millis(140);
+const DOUBLE_TAP: Duration = Duration::from_millis(420);
 
 /// How the hotkey behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -59,7 +70,7 @@ pub enum Mode {
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
     pub mode: Mode,
-    /// Accelerator string, in the form `tauri-plugin-global-shortcut` parses.
+    /// KeyboardEvent `code`, e.g. `ControlRight` or `F8`.
     pub accelerator: String,
 }
 
@@ -88,17 +99,12 @@ pub const fn default_accelerator() -> &'static str {
 }
 
 /// Whether an accelerator can carry push-to-talk on this platform.
-///
-/// Returns a reason rather than a bare bool so the settings UI can explain the
-/// refusal instead of silently rejecting a key the user just pressed.
 pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
-    if accelerator.trim().is_empty() {
+    let accelerator = accelerator.trim();
+    if accelerator.is_empty() {
         return Err("Choose a key to hold.".into());
     }
 
-    // Fn is the one users ask for and the one macOS will not deliver: it
-    // arrives as a modifier flag rather than a key event, and recent hardware
-    // reserves part of its behaviour for the system.
     if accelerator.eq_ignore_ascii_case("Fn") || accelerator.eq_ignore_ascii_case("Function") {
         return Err(
             "macOS does not report the Fn key to applications. Try holding Right Option instead."
@@ -106,60 +112,34 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
         );
     }
 
-    // A hold binding with a printable key would insert characters into whatever
-    // has focus for as long as the user speaks.
-    if is_printable_key(accelerator) {
-        return Err(format!(
-            "Holding {accelerator} would type into whatever you are working in. \
-             Choose a modifier key such as Right Option or Right Ctrl."
-        ));
+    if accelerator.eq_ignore_ascii_case("Escape") {
+        return Err("Escape cancels a dictation. Pick another key to hold.".into());
     }
 
-    if PttKey::parse(accelerator).is_none() {
+    // Old plugin-style chords cannot be polled as a single physical key.
+    if accelerator.contains('+') {
         return Err(
-            "Choose a hold key from the list. Combinations such as Ctrl+Space cannot be held on their own."
+            "Combinations such as Ctrl+Space cannot be held on their own. Press a single key."
                 .into(),
         );
+    }
+
+    if native_code(accelerator).is_none() {
+        return Err("That key cannot be watched on this computer. Try another.".into());
     }
 
     Ok(())
 }
 
-/// A single key the user can hold to talk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PttKey {
-    ControlRight = 1,
-    ControlLeft = 2,
-    AltRight = 3,
-    AltLeft = 4,
-    F8 = 5,
-    F13 = 6,
-}
-
-impl PttKey {
-    pub fn parse(accelerator: &str) -> Option<Self> {
-        match accelerator.trim() {
-            "ControlRight" | "CtrlRight" => Some(Self::ControlRight),
-            "ControlLeft" | "CtrlLeft" => Some(Self::ControlLeft),
-            "AltRight" | "OptionRight" => Some(Self::AltRight),
-            "AltLeft" | "OptionLeft" => Some(Self::AltLeft),
-            "F8" => Some(Self::F8),
-            "F13" => Some(Self::F13),
-            _ => None,
-        }
-    }
-
-    fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::ControlRight),
-            2 => Some(Self::ControlLeft),
-            3 => Some(Self::AltRight),
-            4 => Some(Self::AltLeft),
-            5 => Some(Self::F8),
-            6 => Some(Self::F13),
-            _ => None,
-        }
+/// Hint shown under the bind button when the key will also type.
+pub fn hold_warning(accelerator: &str) -> Option<String> {
+    if types_while_held(accelerator) {
+        Some(format!(
+            "Holding {} also types into whatever has focus. A modifier or function key is quieter.",
+            label(accelerator)
+        ))
+    } else {
+        None
     }
 }
 
@@ -174,55 +154,135 @@ pub fn install(app: &AppHandle) {
 
 /// Point the watcher at the key currently chosen in Settings.
 pub fn listen_for(accelerator: &str) {
-    let code = PttKey::parse(accelerator).map(|key| key as u8).unwrap_or(0);
+    let code = native_code(accelerator).unwrap_or(0);
     CURRENT.store(code, Ordering::SeqCst);
     CANCEL_HOLD.store(true, Ordering::SeqCst);
 }
 
-pub(crate) fn current_key() -> Option<PttKey> {
-    PttKey::from_u8(CURRENT.load(Ordering::Relaxed))
+/// Ignore the hold key while Settings is capturing a replacement.
+pub fn suspend(paused: bool) {
+    SUSPENDED.store(paused, Ordering::SeqCst);
+    if paused {
+        CANCEL_HOLD.store(true, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    Pressed,
+    Ptt,
+    HandsFree,
 }
 
 fn poll_loop() {
     tracing::info!("push-to-talk key watcher started");
+    let mut phase = Phase::Idle;
+    let mut pressed_at: Option<Instant> = None;
+    let mut last_short_release: Option<Instant> = None;
+    let mut escape_held = false;
+    let mut hf_stop_armed = false;
+
     loop {
         let cancel = CANCEL_HOLD.swap(false, Ordering::SeqCst);
-        let down = if cancel {
-            false
-        } else {
-            current_key().is_some_and(platform::is_down)
-        };
-        let was = HELD.swap(down, Ordering::SeqCst);
-        if down != was {
-            dispatch(down);
+        let suspended = SUSPENDED.load(Ordering::Relaxed);
+        let code = CURRENT.load(Ordering::Relaxed);
+        let key_down = !cancel && !suspended && code != 0 && platform::is_down(code);
+        let escape = !suspended && platform::is_escape_down();
+        let now = Instant::now();
+
+        if cancel && phase != Phase::Idle {
+            if matches!(phase, Phase::Ptt | Phase::HandsFree) {
+                dispatch_end(true);
+            }
+            phase = Phase::Idle;
+            pressed_at = None;
+            hf_stop_armed = false;
         }
+
+        if escape && !escape_held && phase != Phase::Idle {
+            if matches!(phase, Phase::Ptt | Phase::HandsFree | Phase::Pressed) {
+                if matches!(phase, Phase::Ptt | Phase::HandsFree) {
+                    dispatch_end(true);
+                }
+            }
+            phase = Phase::Idle;
+            pressed_at = None;
+            hf_stop_armed = false;
+            last_short_release = None;
+        }
+        escape_held = escape;
+
+        match phase {
+            Phase::Idle => {
+                if key_down {
+                    phase = Phase::Pressed;
+                    pressed_at = Some(now);
+                }
+            }
+            Phase::Pressed => {
+                if !key_down {
+                    let is_double = last_short_release
+                        .is_some_and(|t| now.duration_since(t) < DOUBLE_TAP);
+                    if is_double {
+                        phase = Phase::HandsFree;
+                        last_short_release = None;
+                        hf_stop_armed = false;
+                        dispatch_begin();
+                    } else {
+                        last_short_release = Some(now);
+                        phase = Phase::Idle;
+                    }
+                    pressed_at = None;
+                } else if pressed_at.is_some_and(|t| now.duration_since(t) >= HOLD_BEFORE_PTT) {
+                    phase = Phase::Ptt;
+                    last_short_release = None;
+                    dispatch_begin();
+                }
+            }
+            Phase::Ptt => {
+                if !key_down {
+                    phase = Phase::Idle;
+                    dispatch_end(false);
+                }
+            }
+            Phase::HandsFree => {
+                if key_down {
+                    hf_stop_armed = true;
+                } else if hf_stop_armed {
+                    hf_stop_armed = false;
+                    phase = Phase::Idle;
+                    dispatch_end(false);
+                }
+            }
+        }
+
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-fn dispatch(down: bool) {
+fn dispatch_begin() {
+    dispatch(|app| crate::dictation::begin(app));
+}
+
+fn dispatch_end(cancel: bool) {
+    dispatch(move |app| {
+        if cancel {
+            crate::dictation::cancel(app);
+        } else {
+            crate::dictation::end(app);
+        }
+    });
+}
+
+fn dispatch(action: impl FnOnce(&AppHandle) + Send + 'static) {
     let Some(app) = APP.get() else {
         return;
     };
     let app = app.clone();
-    if let Err(error) = app.clone().run_on_main_thread(move || {
-        if down {
-            crate::dictation::begin(&app);
-        } else {
-            crate::dictation::end(&app);
-        }
-    }) {
+    if let Err(error) = app.clone().run_on_main_thread(move || action(&app)) {
         tracing::warn!(%error, "could not dispatch push-to-talk");
     }
-}
-
-/// Whether an accelerator names a single character-producing key.
-fn is_printable_key(accelerator: &str) -> bool {
-    // Combinations are fine; it is a lone printable key that causes trouble.
-    if accelerator.contains('+') {
-        return false;
-    }
-    accelerator.chars().count() == 1 && accelerator.chars().all(|c| c.is_alphanumeric())
 }
 
 #[cfg(test)]
@@ -240,22 +300,19 @@ mod tests {
     #[test]
     fn explains_why_fn_cannot_be_used() {
         let error = validate_for_push_to_talk("Fn").unwrap_err();
-
-        // The message has to name an alternative: "unsupported" alone leaves
-        // the user guessing at what will work.
         assert!(error.contains("Right Option"));
     }
 
     #[test]
-    fn rejects_a_lone_printable_key() {
-        // Holding `a` for a sentence types "aaaaaaaa" into the user's document.
-        let error = validate_for_push_to_talk("a").unwrap_err();
-        assert!(error.contains("type into"));
+    fn rejects_escape_because_it_cancels() {
+        let error = validate_for_push_to_talk("Escape").unwrap_err();
+        assert!(error.to_lowercase().contains("cancel"));
     }
 
     #[test]
-    fn accepts_the_keys_settings_offers() {
-        for accelerator in ["AltRight", "ControlRight", "ControlLeft", "F8", "F13"] {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    fn accepts_letters_and_function_keys() {
+        for accelerator in ["AltRight", "ControlRight", "F8", "F13", "KeyA", "Space", "F5"] {
             assert!(
                 validate_for_push_to_talk(accelerator).is_ok(),
                 "{accelerator} should be allowed"
@@ -264,9 +321,13 @@ mod tests {
     }
 
     #[test]
+    fn warns_that_letters_will_type() {
+        assert!(hold_warning("KeyA").is_some());
+        assert!(hold_warning("ControlRight").is_none());
+    }
+
+    #[test]
     fn rejects_plugin_style_chords() {
-        // The old shortcut plugin accepted these, but a chord cannot be held
-        // as push-to-talk and the watcher would silently ignore it.
         assert!(validate_for_push_to_talk("CommandOrControl+Space").is_err());
     }
 
@@ -276,20 +337,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_keys_settings_offers() {
-        assert_eq!(PttKey::parse("ControlRight"), Some(PttKey::ControlRight));
-        assert_eq!(PttKey::parse("AltRight"), Some(PttKey::AltRight));
-        assert_eq!(PttKey::parse("F8"), Some(PttKey::F8));
-        assert_eq!(PttKey::parse("F13"), Some(PttKey::F13));
-        assert_eq!(PttKey::parse("CommandOrControl+Space"), None);
-    }
-
-    #[test]
     fn round_trips_through_settings_json() {
-        let binding = Binding { mode: Mode::Toggle, accelerator: "F13".into() };
+        let binding = Binding {
+            mode: Mode::Toggle,
+            accelerator: "F13".into(),
+        };
 
         let json = serde_json::to_string(&binding).unwrap();
-        assert!(json.contains("\"toggle\""), "modes are camelCase on the wire: {json}");
+        assert!(
+            json.contains("\"toggle\""),
+            "modes are camelCase on the wire: {json}"
+        );
 
         assert_eq!(serde_json::from_str::<Binding>(&json).unwrap(), binding);
     }

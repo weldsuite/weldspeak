@@ -118,6 +118,10 @@ fn paste(text: &str, preserve_clipboard: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn copy_to_clipboard(text: &str) -> Result<()> {
+    set_clipboard(text)
+}
+
 fn set_clipboard(text: &str) -> Result<()> {
     arboard::Clipboard::new()?.set_text(text.to_string())?;
     Ok(())

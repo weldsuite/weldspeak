@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use weldspeak_core::inject::Preference;
 use crate::hotkey::Binding;
+use crate::snippets::Snippet;
 
 /// Where the API lives. Overridable for local development.
 pub const DEFAULT_API_BASE: &str = "https://weldspeak.weldsuite.org";
@@ -47,6 +48,18 @@ pub struct Settings {
     /// server flag wins and no local copy is written either. Storing the text
     /// of everything someone dictates is not a decision to make casually.
     pub keep_history: bool,
+
+    /// Pause or mute other apps' audio while dictating.
+    #[serde(default = "default_pause_media")]
+    pub pause_media: bool,
+
+    /// Spoken cues that expand to saved text.
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
+
+    /// Running count of words inserted. Displayed in Settings, not synced.
+    #[serde(default)]
+    pub words_dictated: u64,
 }
 
 impl Default for Settings {
@@ -59,8 +72,15 @@ impl Default for Settings {
             clean_up_text: true,
             locale: None,
             keep_history: true,
+            pause_media: default_pause_media(),
+            snippets: Vec::new(),
+            words_dictated: 0,
         }
     }
+}
+
+fn default_pause_media() -> bool {
+    cfg!(target_os = "windows")
 }
 
 impl Settings {
@@ -93,7 +113,7 @@ impl Settings {
     }
 
     fn migrate_hotkey(&mut self) {
-        if crate::hotkey::PttKey::parse(&self.hotkey.accelerator).is_none() {
+        if crate::hotkey::native_code(&self.hotkey.accelerator).is_none() {
             self.hotkey = crate::hotkey::Binding::default();
         }
     }
@@ -145,6 +165,7 @@ mod tests {
         assert!(settings.clean_up_text);
         assert_eq!(settings.injection, InjectionPreference::Automatic);
         assert_eq!(settings.api_base, "https://weldspeak.weldsuite.org");
+        assert_eq!(settings.pause_media, default_pause_media());
     }
 
     #[test]

@@ -339,3 +339,105 @@ pub async fn delete_dictionary_term(app: AppHandle, id: String) -> Result<(), St
     .await
     .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub fn suspend_hotkey(paused: bool) {
+    hotkey::suspend(paused);
+}
+
+#[tauri::command]
+pub fn hotkey_warning(accelerator: String) -> Option<String> {
+    hotkey::hold_warning(&accelerator)
+}
+
+#[tauri::command]
+pub fn hotkey_label(accelerator: String) -> String {
+    hotkey::label(&accelerator)
+}
+
+#[tauri::command]
+pub fn paste_last_transcript(app: AppHandle) -> Result<String, String> {
+    let text = {
+        let state = app.state::<AppState>();
+        let guard = state
+            .last_transcript
+            .lock()
+            .map_err(|_| "session unavailable")?;
+        guard.clone()
+    };
+    let Some(text) = text.filter(|value| !value.is_empty()) else {
+        crate::overlay::show_notice(&app, "Nothing to paste yet.");
+        return Err("Nothing to paste yet.".into());
+    };
+    let preference = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|settings| settings.injection.into())
+        .unwrap_or_default();
+    crate::inject_on_main_thread(&app, text.clone(), preference);
+    Ok(text)
+}
+
+#[tauri::command]
+pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
+    let text = {
+        let state = app.state::<AppState>();
+        let guard = state
+            .last_transcript
+            .lock()
+            .map_err(|_| "session unavailable")?;
+        guard.clone()
+    };
+    let Some(text) = text.filter(|value| !value.is_empty()) else {
+        return Err("Nothing to copy yet.".into());
+    };
+    crate::inject::copy_to_clipboard(&text).map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+struct TranscriptsResponse {
+    transcripts: Vec<TranscriptRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRecord {
+    pub id: String,
+    pub raw: String,
+    pub formatted: String,
+    pub duration_ms: u64,
+    pub app_name: Option<String>,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn list_transcripts(app: AppHandle) -> Result<Vec<TranscriptRecord>, String> {
+    let ctx = session_context(&app)?;
+    let response = api::json::<TranscriptsResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/transcripts?limit=40",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(response.transcripts)
+}
+
+#[tauri::command]
+pub async fn delete_transcript(app: AppHandle, id: String) -> Result<(), String> {
+    let ctx = session_context(&app)?;
+    api::send::<()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::DELETE,
+        &format!("/api/transcripts/{id}"),
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}

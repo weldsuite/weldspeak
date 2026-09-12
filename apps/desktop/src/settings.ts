@@ -16,6 +16,9 @@ interface Settings {
   cleanUpText: boolean;
   locale: string | null;
   keepHistory: boolean;
+  pauseMedia: boolean;
+  snippets: Array<{ trigger: string; expansion: string }>;
+  wordsDictated: number;
 }
 
 interface Status {
@@ -32,39 +35,58 @@ interface DictionaryTerm {
   soundsLike: string | null;
 }
 
-const isMac = navigator.userAgent.includes("Mac");
+interface TranscriptRecord {
+  id: string;
+  formatted: string;
+  createdAt: string;
+}
 
-const HOTKEYS = isMac
-  ? [
-      { value: "AltRight", label: "Right Option" },
-      { value: "ControlRight", label: "Right Control" },
-      { value: "F13", label: "F13" },
-      { value: "F8", label: "F8" },
-    ]
-  : [
-      { value: "ControlRight", label: "Right Ctrl" },
-      { value: "AltRight", label: "Right Alt" },
-      { value: "F8", label: "F8" },
-      { value: "F13", label: "F13" },
-    ];
+const LOCALES = [
+  { value: "", label: "Auto" },
+  { value: "en", label: "English" },
+  { value: "nl", label: "Dutch" },
+  { value: "de", label: "German" },
+  { value: "fr", label: "French" },
+  { value: "es", label: "Spanish" },
+  { value: "pt", label: "Portuguese" },
+  { value: "it", label: "Italian" },
+  { value: "pl", label: "Polish" },
+  { value: "sv", label: "Swedish" },
+  { value: "da", label: "Danish" },
+  { value: "nb", label: "Norwegian" },
+  { value: "fi", label: "Finnish" },
+  { value: "tr", label: "Turkish" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "zh", label: "Chinese" },
+  { value: "ar", label: "Arabic" },
+  { value: "hi", label: "Hindi" },
+];
+
+let bindKeyListener: ((event: KeyboardEvent) => void) | null = null;
 
 export async function mountSettings(root: HTMLElement): Promise<void> {
+  if (bindKeyListener) {
+    window.removeEventListener("keydown", bindKeyListener, true);
+    bindKeyListener = null;
+  }
+
   const [settings, status, version] = await Promise.all([
     invoke<Settings>("get_settings"),
     invoke<Status>("get_status"),
     getVersion(),
   ]);
 
-  const keyOptions = HOTKEYS.some((key) => key.value === settings.hotkey.accelerator)
-    ? HOTKEYS
-    : [...HOTKEYS, { value: settings.hotkey.accelerator, label: settings.hotkey.accelerator }];
+  const keyLabel = await invoke<string>("hotkey_label", {
+    accelerator: settings.hotkey.accelerator,
+  });
 
   root.innerHTML = `
     <main class="settings">
       <header class="top" data-tauri-drag-region>
         <div>
           <h1>WeldSpeak</h1>
-          <p class="lede">Hold ${escapeHtml(labelFor(settings.hotkey.accelerator))} to talk</p>
+          <p class="lede">Hold ${escapeHtml(keyLabel)} to talk</p>
         </div>
         ${status.signedIn ? accountChip(status) : ""}
       </header>
@@ -75,19 +97,13 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
       <section class="block">
         <h2>Dictation</h2>
         <div class="card">
-          <label class="row">
-            <span>Hold to talk</span>
-            <select id="accelerator">
-              ${keyOptions
-                .map(
-                  (key) =>
-                    `<option value="${escapeHtml(key.value)}"${
-                      key.value === settings.hotkey.accelerator ? " selected" : ""
-                    }>${escapeHtml(key.label)}</option>`,
-                )
-                .join("")}
-            </select>
-          </label>
+          <div class="row">
+            <span class="row-copy">
+              Hold to talk
+              <small>Click, then press any key. Double-tap for hands-free. Esc cancels.</small>
+            </span>
+            <button id="bind-key" class="bind-key" type="button">${escapeHtml(keyLabel)}</button>
+          </div>
           <p class="hint" id="hotkey-hint"></p>
           <label class="row">
             <span class="row-copy">
@@ -95,6 +111,24 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
               <small>Drop filler and fix punctuation</small>
             </span>
             <input id="cleanup" class="switch" type="checkbox" ${settings.cleanUpText ? "checked" : ""} />
+          </label>
+          <label class="row">
+            <span class="row-copy">
+              Pause media
+              <small>Silence music and videos while you talk</small>
+            </span>
+            <input id="pause-media" class="switch" type="checkbox" ${settings.pauseMedia ? "checked" : ""} />
+          </label>
+          <label class="row">
+            <span>Language</span>
+            <select id="locale">
+              ${LOCALES.map(
+                (locale) =>
+                  `<option value="${escapeHtml(locale.value)}"${
+                    (settings.locale ?? "") === locale.value ? " selected" : ""
+                  }>${escapeHtml(locale.label)}</option>`,
+              ).join("")}
+            </select>
           </label>
           <label class="row">
             <span>Insert by</span>
@@ -107,7 +141,22 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
         </div>
       </section>
 
+      <section class="block">
+        <h2>Snippets</h2>
+        <div class="card">
+          <p class="muted">Say the cue, get the saved text. “my email” can become your address.</p>
+          <form id="snippet-form" class="snippet-form">
+            <input id="snippet-trigger" type="text" maxlength="60" placeholder="Cue, e.g. my address" autocomplete="off" />
+            <input id="snippet-expansion" type="text" maxlength="4000" placeholder="Text to insert" autocomplete="off" />
+            <button class="primary" type="submit">Add</button>
+          </form>
+          <p class="hint error" id="snippet-error"></p>
+          <ul id="snippet-list" class="term-list"></ul>
+        </div>
+      </section>
+
       ${status.signedIn ? dictionaryMarkup() : ""}
+      ${status.signedIn ? historyMarkup() : ""}
 
       <section class="block">
         <h2>App</h2>
@@ -115,7 +164,7 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
           <div class="row">
             <span class="row-copy">
               Version
-              <small>WeldSpeak ${escapeHtml(version)}</small>
+              <small>WeldSpeak ${escapeHtml(version)} · ${settings.wordsDictated.toLocaleString()} words</small>
             </span>
             <button id="check-update" type="button">Update</button>
           </div>
@@ -125,37 +174,96 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
     </main>
   `;
 
-  const accelerator = root.querySelector<HTMLSelectElement>("#accelerator")!;
   const hint = root.querySelector<HTMLElement>("#hotkey-hint")!;
   const injection = root.querySelector<HTMLSelectElement>("#injection")!;
   injection.value = settings.injection;
+  let currentKey = settings.hotkey.accelerator;
+  let capturing = false;
 
   const save = async (patch: Partial<Settings>) => {
     await invoke("update_settings", { patch });
   };
 
-  const validateHotkey = async () => {
+  const showHotkeyHint = async () => {
     const error = await invoke<string | null>("validate_hotkey", {
-      accelerator: accelerator.value,
+      accelerator: currentKey,
     });
-    hint.textContent = error ?? "";
+    const warning = error
+      ? null
+      : await invoke<string | null>("hotkey_warning", { accelerator: currentKey });
+    hint.textContent =
+      error ?? warning ?? "Hold to talk. Double-tap for hands-free. Esc cancels.";
     hint.classList.toggle("error", Boolean(error));
     return !error;
   };
 
-  accelerator.addEventListener("change", async () => {
-    if (await validateHotkey()) {
-      await save({
-        hotkey: { mode: "pushToTalk", accelerator: accelerator.value },
-      });
-      const lede = root.querySelector(".lede");
-      if (lede) lede.textContent = `Hold ${labelFor(accelerator.value)} to talk`;
+  const applyKey = async (accelerator: string) => {
+    const error = await invoke<string | null>("validate_hotkey", { accelerator });
+    if (error) {
+      hint.textContent = error;
+      hint.classList.add("error");
+      return;
     }
+    currentKey = accelerator;
+    await save({ hotkey: { mode: "pushToTalk", accelerator } });
+    const label = await invoke<string>("hotkey_label", { accelerator });
+    const button = root.querySelector<HTMLButtonElement>("#bind-key");
+    if (button) button.textContent = label;
+    const lede = root.querySelector(".lede");
+    if (lede) lede.textContent = `Hold ${label} to talk`;
+    await showHotkeyHint();
+  };
+
+  const stopCapture = async () => {
+    capturing = false;
+    await invoke("suspend_hotkey", { paused: false });
+    const button = root.querySelector<HTMLButtonElement>("#bind-key");
+    if (button) {
+      button.dataset.listening = "false";
+      button.textContent = await invoke<string>("hotkey_label", { accelerator: currentKey });
+    }
+  };
+
+  const startCapture = async () => {
+    capturing = true;
+    await invoke("suspend_hotkey", { paused: true });
+    const button = root.querySelector<HTMLButtonElement>("#bind-key");
+    if (button) {
+      button.dataset.listening = "true";
+      button.textContent = "Press a key…";
+    }
+    hint.textContent = "Press the key you want to hold. Esc cancels.";
+    hint.classList.remove("error");
+  };
+
+  root.querySelector("#bind-key")?.addEventListener("click", () => {
+    void (capturing ? stopCapture() : startCapture());
   });
+
+  bindKeyListener = (event: KeyboardEvent) => {
+    if (!capturing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.code === "Escape") {
+      void stopCapture();
+      return;
+    }
+    void applyKey(event.code).then(() => stopCapture());
+  };
+  window.addEventListener("keydown", bindKeyListener, true);
 
   injection.addEventListener("change", () =>
     save({ injection: injection.value as Settings["injection"] }),
   );
+
+  root.querySelector("#pause-media")!.addEventListener("change", (event) =>
+    save({ pauseMedia: (event.target as HTMLInputElement).checked }),
+  );
+
+  root.querySelector("#locale")!.addEventListener("change", (event) => {
+    const value = (event.target as HTMLSelectElement).value;
+    void save({ locale: value ? value : null });
+  });
 
   root.querySelector("#cleanup")!.addEventListener("change", (event) =>
     save({ cleanUpText: (event.target as HTMLInputElement).checked }),
@@ -174,15 +282,121 @@ export async function mountSettings(root: HTMLElement): Promise<void> {
 
   if (status.signedIn) {
     await bindDictionary(root);
+    await bindHistory(root);
   }
 
+  bindSnippets(root, settings.snippets ?? [], save);
   bindUpdate(root);
 
-  await validateHotkey();
+  await showHotkeyHint();
 }
 
-function labelFor(accelerator: string): string {
-  return HOTKEYS.find((key) => key.value === accelerator)?.label ?? accelerator;
+function historyMarkup(): string {
+  return `
+    <section class="block">
+      <h2>History</h2>
+      <div class="card">
+        <ul id="history-list" class="history-list"></ul>
+      </div>
+    </section>
+  `;
+}
+
+function bindSnippets(
+  root: HTMLElement,
+  initial: Array<{ trigger: string; expansion: string }>,
+  save: (patch: Partial<Settings>) => Promise<void>,
+): void {
+  let snippets = [...initial];
+  const list = root.querySelector<HTMLUListElement>("#snippet-list");
+  const form = root.querySelector<HTMLFormElement>("#snippet-form");
+  const trigger = root.querySelector<HTMLInputElement>("#snippet-trigger");
+  const expansion = root.querySelector<HTMLInputElement>("#snippet-expansion");
+  const errorEl = root.querySelector<HTMLElement>("#snippet-error");
+  if (!list || !form || !trigger || !expansion) return;
+
+  const render = () => {
+    if (snippets.length === 0) {
+      list.innerHTML = `<li class="empty">Nothing here yet.</li>`;
+      return;
+    }
+    list.innerHTML = snippets
+      .map(
+        (snippet, index) => `
+        <li>
+          <div class="term">
+            <span>${escapeHtml(snippet.trigger)}</span>
+            <small>${escapeHtml(snippet.expansion)}</small>
+          </div>
+          <button type="button" class="ghost" data-index="${index}">Remove</button>
+        </li>`,
+      )
+      .join("");
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const cue = trigger.value.trim();
+    const text = expansion.value.trim();
+    if (!cue || !text) return;
+    if (errorEl) errorEl.textContent = "";
+    snippets = [...snippets, { trigger: cue, expansion: text }];
+    await save({ snippets });
+    trigger.value = "";
+    expansion.value = "";
+    trigger.focus();
+    render();
+  });
+
+  list.addEventListener("click", async (event) => {
+    const index = Number((event.target as HTMLElement | null)?.closest("button")?.dataset.index);
+    if (Number.isNaN(index)) return;
+    snippets = snippets.filter((_, item) => item !== index);
+    await save({ snippets });
+    render();
+  });
+
+  render();
+}
+
+async function bindHistory(root: HTMLElement): Promise<void> {
+  const list = root.querySelector<HTMLUListElement>("#history-list");
+  if (!list) return;
+
+  const render = (records: TranscriptRecord[]) => {
+    if (records.length === 0) {
+      list.innerHTML = `<li class="empty">No dictations saved yet.</li>`;
+      return;
+    }
+    list.innerHTML = records
+      .map(
+        (record) => `
+        <li>
+          <div class="term">
+            <span>${escapeHtml(record.formatted)}</span>
+          </div>
+          <button type="button" class="ghost" data-delete="${escapeHtml(record.id)}">Remove</button>
+        </li>`,
+      )
+      .join("");
+  };
+
+  try {
+    render(await invoke<TranscriptRecord[]>("list_transcripts"));
+  } catch {
+    list.innerHTML = `<li class="empty">Sign in to see history.</li>`;
+  }
+
+  list.addEventListener("click", async (event) => {
+    const id = (event.target as HTMLElement | null)?.closest("button")?.dataset.delete;
+    if (!id) return;
+    try {
+      await invoke("delete_transcript", { id });
+      render(await invoke<TranscriptRecord[]>("list_transcripts"));
+    } catch {
+      /* keep the current list */
+    }
+  });
 }
 
 function accountChip(status: Status): string {

@@ -7,27 +7,17 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-use super::PttKey;
+const VK_ESCAPE: u16 = 0x1B;
 
-const VK_LCONTROL: u32 = 0xA2;
-const VK_RCONTROL: u32 = 0xA3;
-const VK_LMENU: u32 = 0xA4;
-const VK_RMENU: u32 = 0xA5;
-const VK_F8: u32 = 0x77;
-const VK_F13: u32 = 0x7C;
-
-pub fn is_down(key: PttKey) -> bool {
-    match key {
-        PttKey::ControlRight => down(VK_RCONTROL),
-        PttKey::ControlLeft => down(VK_LCONTROL),
-        PttKey::AltRight => down(VK_RMENU),
-        PttKey::AltLeft => down(VK_LMENU),
-        PttKey::F8 => down(VK_F8),
-        PttKey::F13 => down(VK_F13),
-    }
+pub fn is_down(vk: u16) -> bool {
+    down(vk)
 }
 
-fn down(vk: u32) -> bool {
+pub fn is_escape_down() -> bool {
+    down(VK_ESCAPE)
+}
+
+fn down(vk: u16) -> bool {
     // High bit is the current physical state. Safe to call from any thread.
-    unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+    unsafe { GetAsyncKeyState(i32::from(vk)) as u16 & 0x8000 != 0 }
 }

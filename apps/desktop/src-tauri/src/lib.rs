@@ -16,8 +16,10 @@ pub mod commands;
 pub mod dictation;
 pub mod hotkey;
 pub mod inject;
+pub mod media;
 pub mod overlay;
 pub mod settings;
+pub mod snippets;
 pub mod transport;
 pub mod updater;
 
@@ -45,6 +47,10 @@ pub struct AppState {
     /// True while the listening pill is on screen, so the audio thread can
     /// drive the waveform without the overlay polling.
     pub overlay_live: AtomicBool,
+    /// Last successfully injected dictation, for Paste last / Copy last.
+    pub last_transcript: Mutex<Option<String>>,
+    /// Media we paused or muted for the current dictation.
+    pub media: Mutex<media::MediaPause>,
 }
 
 impl Default for AppState {
@@ -56,6 +62,8 @@ impl Default for AppState {
             capture: Mutex::new(None),
             outbound: Mutex::new(None),
             overlay_live: AtomicBool::new(false),
+            last_transcript: Mutex::new(None),
+            media: Mutex::new(media::MediaPause::default()),
         }
     }
 }
@@ -128,6 +136,13 @@ pub fn run() {
             commands::list_dictionary,
             commands::add_dictionary_term,
             commands::delete_dictionary_term,
+            commands::suspend_hotkey,
+            commands::hotkey_warning,
+            commands::hotkey_label,
+            commands::paste_last_transcript,
+            commands::copy_last_transcript,
+            commands::list_transcripts,
+            commands::delete_transcript,
             updater::install_update,
         ])
         .setup(|app| {
@@ -226,8 +241,10 @@ fn restore_session(app: &AppHandle) {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let paste_item = MenuItem::with_id(app, "paste-last", "Paste last dictation", true, None::<&str>)?;
+    let copy_item = MenuItem::with_id(app, "copy-last", "Copy last dictation", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit WeldSpeak", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&settings_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&settings_item, &paste_item, &copy_item, &quit_item])?;
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
@@ -245,6 +262,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "settings" => show_settings(app),
+            "paste-last" => {
+                let _ = commands::paste_last_transcript(app.clone());
+            }
+            "copy-last" => {
+                let _ = commands::copy_last_transcript(app.clone());
+            }
             "quit" => app.exit(0),
             _ => {}
         })

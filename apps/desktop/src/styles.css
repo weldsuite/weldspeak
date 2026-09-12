@@ -95,44 +95,25 @@ body.overlay-window {
 .waveform {
   display: flex;
   align-items: center;
-  gap: 2px;
-  height: 14px;
+  gap: 3px;
+  height: 16px;
   flex: none;
 }
 
 .waveform span {
   display: block;
   width: 2px;
-  height: 14px;
+  height: 16px;
   border-radius: 1px;
   background: var(--accent);
-  transform: scaleY(0.2);
+  transform: scaleY(0.12);
   transform-origin: center;
-  transition: transform 40ms linear;
+  transition: transform 16ms linear;
 }
 
 .pill[data-phase="thinking"] .waveform span,
 .pill[data-phase="notice"] .waveform span {
   background: #8e8e93;
-  animation: none;
-}
-
-.pill[data-phase="listening"] .waveform span {
-  animation: talk 0.8s ease-in-out infinite;
-}
-
-.pill[data-phase="listening"] .waveform span:nth-child(2) { animation-delay: 0.08s; }
-.pill[data-phase="listening"] .waveform span:nth-child(3) { animation-delay: 0.16s; }
-.pill[data-phase="listening"] .waveform span:nth-child(4) { animation-delay: 0.04s; }
-.pill[data-phase="listening"] .waveform span:nth-child(5) { animation-delay: 0.2s; }
-
-@keyframes talk {
-  0%, 100% { transform: scaleY(0.22); }
-  50% { transform: scaleY(1); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pill[data-phase="listening"] .waveform span { animation: none; }
 }
 
 .text {
@@ -421,6 +402,57 @@ button.ghost {
 }
 
 button.ghost:hover { color: var(--text); }
+
+.bind-key {
+  font-weight: 600;
+  min-width: 108px;
+  text-align: center;
+}
+
+.bind-key[data-listening="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.snippet-form,
+.term-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+}
+
+.snippet-form #snippet-trigger,
+.term-form #term-input {
+  grid-column: 1 / -1;
+  border-bottom: 0.5px solid var(--separator);
+}
+
+.snippet-form #snippet-expansion {
+  min-width: 0;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.history-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 0.5px solid var(--separator);
+}
+
+.history-list .term span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 button:disabled {
   opacity: 0.55;
