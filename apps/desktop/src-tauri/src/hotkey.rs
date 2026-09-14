@@ -58,7 +58,11 @@ static SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// cannot keep a dictation open.
 static CANCEL_HOLD: AtomicBool = AtomicBool::new(false);
 
-const HOLD_BEFORE_PTT: Duration = Duration::from_millis(140);
+/// How long a press must last before it stops counting as a double-tap candidate.
+///
+/// Dictation itself starts on key-down; this only gates whether a quick release
+/// arms hands-free on the next press (Wispr-style double-tap).
+const SHORT_TAP: Duration = Duration::from_millis(140);
 const DOUBLE_TAP: Duration = Duration::from_millis(420);
 
 /// How the hotkey behaves.
@@ -225,7 +229,6 @@ pub fn suspend(paused: bool) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Idle,
-    Pressed,
     Ptt,
     HandsFree,
 }
@@ -269,32 +272,31 @@ fn poll_loop() {
         match phase {
             Phase::Idle => {
                 if key_down {
-                    phase = Phase::Pressed;
-                    pressed_at = Some(now);
-                }
-            }
-            Phase::Pressed => {
-                if !key_down {
+                    // Start on press so a quick tap still records. Waiting for a
+                    // hold threshold was dropping utterances Wispr Flow would keep.
                     let is_double =
                         last_short_release.is_some_and(|t| now.duration_since(t) < DOUBLE_TAP);
                     if is_double {
                         phase = Phase::HandsFree;
                         last_short_release = None;
                         hf_stop_armed = false;
-                        dispatch_begin();
                     } else {
-                        last_short_release = Some(now);
-                        phase = Phase::Idle;
+                        phase = Phase::Ptt;
+                        pressed_at = Some(now);
                     }
-                    pressed_at = None;
-                } else if pressed_at.is_some_and(|t| now.duration_since(t) >= HOLD_BEFORE_PTT) {
-                    phase = Phase::Ptt;
-                    last_short_release = None;
                     dispatch_begin();
                 }
             }
             Phase::Ptt => {
                 if !key_down {
+                    // A brief press can be the first half of a double-tap for
+                    // hands-free; a real hold clears that candidate.
+                    if pressed_at.is_some_and(|t| now.duration_since(t) < SHORT_TAP) {
+                        last_short_release = Some(now);
+                    } else {
+                        last_short_release = None;
+                    }
+                    pressed_at = None;
                     phase = Phase::Idle;
                     dispatch_end(false);
                 }

@@ -1,9 +1,9 @@
 //! WeldSpeak desktop client.
 //!
-//! A tray application with no window of its own most of the time: hold the
-//! hotkey, speak, release, and the text appears wherever you were typing.
-//! Open WeldSpeak from the tray for the native Hub (history, dictionary,
-//! snippets, settings).
+//! A full desktop app with a Hub window (history, dictionary, snippets,
+//! settings) plus a tray icon and push-to-talk overlay. Hold the hotkey,
+//! speak, release — text appears wherever you were typing. Closing the Hub
+//! hides it to the tray; Quit ends the process.
 //!
 //! The portable logic — audio conditioning, the session state machine,
 //! injection policy, token lifetime — lives in `weldspeak-core`, where it is
@@ -134,7 +134,12 @@ pub fn run() {
         )
         .init();
 
+    // Single-instance must register first so a second launch exits before other
+    // plugins grab the mic, hotkey, or tray.
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_settings(app);
+        }))
         .plugin(build_shortcut_plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -161,10 +166,10 @@ pub fn run() {
             updater::install_update,
         ])
         .setup(|app| {
-            // Accessory activation policy: WeldSpeak is a tray utility, and a
-            // dock icon for something with no main window is just clutter.
+            // Regular app: dock/taskbar presence like other desktop dictation
+            // clients. The tray remains for when the Hub is closed.
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             let handle = app.handle().clone();
 
@@ -196,19 +201,30 @@ pub fn run() {
             reregister_hotkey(&handle);
             updater::spawn(handle.clone());
 
+            // Open the Hub on launch — this is a desktop app, not tray-only.
+            show_settings(&handle);
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to build WeldSpeak")
-        .run(|_app, event| {
-            // Closing the settings window must not quit: the app lives in the
-            // tray and the hotkey has to keep working. Programmatic exits
-            // (tray Quit → app.exit) carry a code and must be allowed through;
-            // otherwise a zombie process keeps the refresh token and the next
-            // launch triggers reuse detection, which signs the user out.
-            if let RunEvent::ExitRequested { api, code, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
+        .run(|app, event| {
+            // Closing the Hub must not quit: dictation keeps running from the
+            // tray. Programmatic exits (tray Quit → app.exit) carry a code and
+            // must be allowed through; otherwise a zombie process keeps the
+            // refresh token and the next launch triggers reuse detection, which
+            // signs the user out.
+            match event {
+                RunEvent::ExitRequested { api, code, .. } => {
+                    if code.is_none() {
+                        api.prevent_exit();
+                    }
+                }
+                // Dock / Finder reopen brings the Hub back.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen { .. } => show_settings(app),
+                _ => {
+                    let _ = app;
                 }
             }
         });
@@ -276,7 +292,7 @@ fn restore_session(app: &AppHandle) {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let settings_item = MenuItem::with_id(app, "settings", "Open WeldSpeak", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Show WeldSpeak", true, None::<&str>)?;
     let paste_item = MenuItem::with_id(
         app,
         "paste-last",

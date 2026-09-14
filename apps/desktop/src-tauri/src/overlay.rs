@@ -11,8 +11,8 @@ use tauri::{AppHandle, Manager, PhysicalPosition};
 use crate::audio::Capture;
 use crate::AppState;
 
-const COMPACT_W: i32 = 72;
-const COMPACT_H: i32 = 34;
+const COMPACT_W: i32 = 88;
+const COMPACT_H: i32 = 40;
 
 /// 0 idle (hidden), 1 listening, 2 thinking, 3 notice.
 static PHASE: AtomicU8 = AtomicU8::new(0);
@@ -117,10 +117,15 @@ fn current_level(app: &AppHandle) -> f32 {
 }
 
 fn position_over_cursor(app: &AppHandle, width: i32, height: i32) -> Option<(i32, i32)> {
-    #[allow(unused_variables)]
-    let _ = (app, width, height);
     platform::cursor_monitor_rect(app).map(|(x, y, w, h)| {
         let px = x + (w - width) / 2;
+        // Windows work-area coords are top-left; Cocoa visibleFrame is bottom-left.
+        #[cfg(target_os = "macos")]
+        let py = {
+            let _ = (h, height);
+            y + 56
+        };
+        #[cfg(not(target_os = "macos"))]
         let py = y + h - height - 56;
         (px, py)
     })

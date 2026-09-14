@@ -15,17 +15,27 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowLongPtrW, MoveWindow, RegisterClassW,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE,
-    HTTRANSPARENT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-    WM_DESTROY, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_HREDRAW,
+    CS_VREDRAW, GWL_EXSTYLE, HTTRANSPARENT, HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 
 use super::{current_level, notice_lock, PHASE};
 
 static HWND_BITS: AtomicIsize = AtomicIsize::new(0);
-static SIZE: Mutex<(i32, i32)> = Mutex::new((72, 34));
+static SIZE: Mutex<(i32, i32)> = Mutex::new((88, 40));
 static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
+
+/// Capsule fill — near-black with a cool cast (BGR).
+const BG: COLORREF = COLORREF(0x0014_1210);
+/// Brand orange `#de713e` as COLORREF (BGR).
+const ACCENT: COLORREF = COLORREF(0x003E_71DE);
+/// Thinking / idle bar tone.
+const MUTED: COLORREF = COLORREF(0x007A_7672);
+/// Notice text.
+const TEXT: COLORREF = COLORREF(0x00F7_F5F5);
 
 fn module() -> HINSTANCE {
     unsafe { HINSTANCE(GetModuleHandleW(None).expect("module").0) }
@@ -54,17 +64,19 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             WS_POPUP,
             0,
             0,
-            72,
-            34,
+            88,
+            40,
             HWND::default(),
             windows::Win32::UI::WindowsAndMessaging::HMENU::default(),
             module(),
             None,
         )
         .expect("overlay window");
+        // WS_EX_LAYERED windows stay invisible until opacity/color-key is set.
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 245, LWA_ALPHA);
         HWND_BITS.store(window.0 as isize, Ordering::Relaxed);
         let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE));
-        round_region(window, 72, 34);
+        round_region(window, 88, 40);
     }
     Ok(())
 }
@@ -88,6 +100,7 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         return;
     }
     unsafe {
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 245, LWA_ALPHA);
         round_region(window, w, h);
         let _ = MoveWindow(window, x, y, w, h, true);
         let _ = SetWindowPos(
@@ -161,8 +174,8 @@ fn paint(window: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(window, &mut ps);
-        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((72, 34));
-        let bg = CreateSolidBrush(COLORREF(0x0018_1616));
+        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((88, 40));
+        let bg = CreateSolidBrush(BG);
         let rect = RECT {
             left: 0,
             top: 0,
@@ -185,9 +198,9 @@ fn paint(window: HWND) {
 fn draw_notice(hdc: HDC, text: &str, h: i32) {
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLORREF(0x00F7_F5F5));
+        SetTextColor(hdc, TEXT);
         let font = CreateFontW(
-            14,
+            13,
             0,
             0,
             0,
@@ -204,7 +217,7 @@ fn draw_notice(hdc: HDC, text: &str, h: i32) {
         );
         let old = SelectObject(hdc, font);
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let _ = TextOutW(hdc, 12, (h / 2) - 8, &wide);
+        let _ = TextOutW(hdc, 14, (h / 2) - 8, &wide);
         SelectObject(hdc, old);
         let _ = DeleteObject(font);
     }
@@ -227,22 +240,20 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
     let envelope = *env;
     drop(env);
 
-    let color = if thinking {
-        COLORREF(0x0093_8E8E)
-    } else {
-        COLORREF(0x003E_71DE)
-    };
+    let color = if thinking { MUTED } else { ACCENT };
     unsafe {
         let brush = CreateSolidBrush(color);
         let old_pen = SelectObject(hdc, GetStockObject(BLACK_PEN));
-        let gap = 3;
-        let bar_w = 2;
-        let total = 5 * bar_w + 4 * gap;
+        let gap = 4;
+        let bar_w = 3;
+        let count = 5;
+        let total = count * bar_w + (count - 1) * gap;
         let start_x = (w - total) / 2;
-        let max_h = 12.0;
-        for i in 0..5 {
-            let wobble = 0.38 + 0.62 * ((i as f32 * 1.37 + envelope * 2.1).sin().abs());
-            let frac = (0.1 + envelope * wobble).clamp(0.12, 1.0);
+        let max_h = (h as f32 - 14.0).max(12.0);
+        for i in 0..count {
+            let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
+            let floor = if thinking { 0.18 } else { 0.14 };
+            let frac = (floor + envelope * wobble).clamp(floor, 1.0);
             let bh = (max_h * frac) as i32;
             let x = start_x + i * (bar_w + gap);
             let y = (h - bh) / 2;

@@ -8,14 +8,20 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Mutex;
 use tauri::AppHandle;
 
-use super::{notice_lock, PHASE};
+use super::{current_level, notice_lock, PHASE};
 
 static PANEL_PTR: AtomicIsize = AtomicIsize::new(0);
+static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
 
 fn mtm() -> MainThreadMarker {
-    MainThreadMarker::new().expect("AppKit overlay on the main thread")
+    // `MainThreadMarker::new()` requires the `NSThread` feature, which this
+    // crate does not enable. Every caller of `mtm()` in this module already
+    // runs on the main thread (panel setup or AppKit event handling).
+    // Safety: only called from AppKit setup / main-thread overlay code.
+    unsafe { MainThreadMarker::new_unchecked() }
 }
 
 fn panel() -> Option<Retained<NSPanel>> {
@@ -29,7 +35,7 @@ fn panel() -> Option<Retained<NSPanel>> {
 
 pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     let mtm = mtm();
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(72.0, 34.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(88.0, 40.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel = unsafe {
         NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -50,13 +56,13 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
     }
-    panel.setOpaque(true);
+    panel.setOpaque(false);
     panel.setHasShadow(true);
     panel.setIgnoresMouseEvents(true);
     panel.setLevel(3); // NSFloatingWindowLevel
-    panel.setBackgroundColor(Some(&unsafe {
-        NSColor::colorWithCalibratedRed_green_blue_alpha(0.09, 0.086, 0.086, 0.92)
-    }));
+    let panel_bg =
+        unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.063, 0.071, 0.078, 0.96) };
+    panel.setBackgroundColor(Some(&panel_bg));
 
     let content = panel.contentView().expect("content view");
     let label = unsafe { NSTextField::new(mtm) };
@@ -66,9 +72,10 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         label.setDrawsBackground(false);
         label.setSelectable(false);
         label.setAlignment(NSTextAlignment::Center);
-        label.setTextColor(Some(&NSColor::whiteColor()));
-        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        label.setFrame(NSRect::new(NSPoint::new(8.0, 6.0), NSSize::new(56.0, 22.0)));
+        let label_fg = NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0);
+        label.setTextColor(Some(&label_fg));
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(14.0)));
+        label.setFrame(NSRect::new(NSPoint::new(8.0, 8.0), NSSize::new(72.0, 24.0)));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);
     }
@@ -81,6 +88,71 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
 
 thread_local! {
     static LABEL: RefCell<Option<Retained<NSTextField>>> = const { RefCell::new(None) };
+}
+
+fn waveform_glyphs(envelope: f32, thinking: bool) -> String {
+    const STEPS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    (0..5)
+        .map(|i| {
+            let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
+            let floor = if thinking { 0.18 } else { 0.14 };
+            let frac = (floor + envelope * wobble).clamp(floor, 1.0);
+            let idx = ((frac * (STEPS.len() - 1) as f32).round() as usize).min(STEPS.len() - 1);
+            STEPS[idx]
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn update_label(app: Option<&AppHandle>) {
+    LABEL.with(|slot| {
+        let Some(label) = slot.borrow().as_ref() else {
+            return;
+        };
+        let phase = PHASE.load(Ordering::Relaxed);
+        let (text, orange) = if phase == 3 {
+            (
+                notice_lock()
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
+                false,
+            )
+        } else if phase == 1 || phase == 2 {
+            let thinking = phase == 2;
+            let envelope = if let Some(app) = app {
+                let raw = current_level(app);
+                let db = 20.0 * (raw.max(1e-5)).log10();
+                let voice = ((db + 48.0) / 40.0).clamp(0.0, 1.0);
+                let mut env = BAR_ENV.lock().unwrap_or_else(|e| e.into_inner());
+                *env = if voice > *env {
+                    voice
+                } else {
+                    *env * 0.72 + voice * 0.28
+                };
+                let v = *env;
+                drop(env);
+                v
+            } else {
+                0.2
+            };
+            (waveform_glyphs(envelope, thinking), !thinking)
+        } else {
+            (String::new(), true)
+        };
+        unsafe {
+            if orange {
+                label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+                    0.871, 0.443, 0.243, 1.0,
+                )));
+            } else {
+                label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+                    0.96, 0.96, 0.96, 1.0,
+                )));
+            }
+            label.setStringValue(&NSString::from_str(&text));
+        }
+    });
 }
 
 pub fn show(app: &AppHandle, w: i32, h: i32) {
@@ -102,23 +174,13 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         if let Some(label) = slot.borrow().as_ref() {
             unsafe {
                 label.setFrame(NSRect::new(
-                    NSPoint::new(10.0, 6.0),
-                    NSSize::new((w as f64) - 20.0, 22.0),
+                    NSPoint::new(10.0, 8.0),
+                    NSSize::new((w as f64) - 20.0, 24.0),
                 ));
-            }
-            let phase = PHASE.load(Ordering::Relaxed);
-            let text = if phase == 3 {
-                notice_lock().lock().map(|g| g.clone()).unwrap_or_default()
-            } else if phase == 2 {
-                "…".into()
-            } else {
-                String::new()
-            };
-            unsafe {
-                label.setStringValue(&NSString::from_str(&text));
             }
         }
     });
+    update_label(Some(app));
     unsafe {
         panel.orderFrontRegardless();
     }
@@ -131,15 +193,8 @@ pub fn hide() {
 }
 
 pub fn repaint() {
-    LABEL.with(|slot| {
-        if let Some(label) = slot.borrow().as_ref() {
-            if PHASE.load(Ordering::Relaxed) == 1 {
-                unsafe {
-                    label.setStringValue(&NSString::from_str(""));
-                }
-            }
-        }
-    });
+    let app = super::APP.get();
+    update_label(app);
 }
 
 pub fn cursor_monitor_rect(_app: &AppHandle) -> Option<(i32, i32, i32, i32)> {

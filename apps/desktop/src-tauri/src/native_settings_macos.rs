@@ -9,17 +9,22 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSInteger, NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 use crate::native_settings::{
-    self, Page, DASHBOARD_URL, LOCALES, SIDEBAR_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_HEIGHT,
+    self, theme, Page, DASHBOARD_URL, LOCALES, SIDEBAR_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_HEIGHT,
     WINDOW_MIN_WIDTH, WINDOW_WIDTH,
 };
 use crate::settings::InjectionPreference;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
-static ACTION_TARGET: OnceLock<Retained<NSObject>> = OnceLock::new();
+// `Retained<NSObject>` is not `Sync`/`Send`, so it cannot live directly in a
+// `static`. Store the raw pointer instead and retain/release manually,
+// mirroring the `PANEL_PTR` pattern in overlay_macos.rs. The object is
+// created once on the main thread and only ever touched there.
+static ACTION_TARGET_PTR: AtomicIsize = AtomicIsize::new(0);
 static PAGE: Mutex<Page> = Mutex::new(Page::Home);
 static TRANSCRIPTS: Mutex<Vec<crate::commands::TranscriptRecord>> = Mutex::new(Vec::new());
 static DICTIONARY: Mutex<Vec<crate::commands::DictionaryTerm>> = Mutex::new(Vec::new());
@@ -32,12 +37,18 @@ thread_local! {
 }
 
 fn mtm() -> MainThreadMarker {
-    MainThreadMarker::new().expect("AppKit hub on the main thread")
+    // `MainThreadMarker::new()` requires the `NSThread` feature, which this
+    // crate does not enable. Every caller of `mtm()` in this module already
+    // runs on the main thread (AppKit setup during window construction, or
+    // action handlers dispatched by AppKit itself).
+    // Safety: only called from AppKit callbacks / window construction, which
+    // always run on the main thread.
+    unsafe { MainThreadMarker::new_unchecked() }
 }
 
 pub fn show(app: &AppHandle) {
     let _ = APP.set(app.clone());
-    let _ = install_actions();
+    install_actions();
     WINDOW.with(|slot| {
         if let Some(window) = slot.borrow().as_ref() {
             window.makeKeyAndOrderFront(None);
@@ -86,9 +97,16 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
         ));
     }
     window.setTitle(&NSString::from_str("WeldSpeak"));
-    window.setBackgroundColor(Some(&unsafe {
-        NSColor::colorWithCalibratedRed_green_blue_alpha(0.98, 0.976, 0.965, 1.0)
-    }));
+    let (cr, cg, cb) = theme::CONTENT_BG_RGB;
+    let window_bg = unsafe {
+        NSColor::colorWithCalibratedRed_green_blue_alpha(
+            cr as f64 / 255.0,
+            cg as f64 / 255.0,
+            cb as f64 / 255.0,
+            1.0,
+        )
+    };
+    window.setBackgroundColor(Some(&window_bg));
     window.center();
 
     let root = window.contentView().expect("content view");
@@ -98,11 +116,33 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
             NSPoint::new(0.0, 0.0),
             NSSize::new(SIDEBAR_WIDTH as f64, WINDOW_HEIGHT as f64),
         ));
-        sidebar.setWantsLayer(true);
-        if let Some(layer) = sidebar.layer() {
-            let _ = layer;
-        }
+        // Sidebar background tinting via CALayer would need the
+        // `objc2-quartz-core` crate/feature, which this crate does not
+        // depend on. Skip the layer tint; the window background already
+        // matches the content area.
         root.addSubview(&sidebar);
+    }
+
+    let brand = unsafe { NSTextField::new(mtm) };
+    unsafe {
+        brand.setEditable(false);
+        brand.setBezeled(false);
+        brand.setDrawsBackground(false);
+        brand.setSelectable(false);
+        brand.setStringValue(&NSString::from_str("WeldSpeak"));
+        brand.setFont(Some(&NSFont::boldSystemFontOfSize(16.0)));
+        let (tr, tg, tb) = theme::SIDEBAR_TEXT_RGB;
+        brand.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+            tr as f64 / 255.0,
+            tg as f64 / 255.0,
+            tb as f64 / 255.0,
+            1.0,
+        )));
+        brand.setFrame(NSRect::new(
+            NSPoint::new(18.0, (WINDOW_HEIGHT as f64) - 52.0),
+            NSSize::new((SIDEBAR_WIDTH - 28) as f64, 28.0),
+        ));
+        sidebar.addSubview(&brand);
     }
 
     let mut nav = Vec::new();
@@ -110,11 +150,12 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
         let button = unsafe { NSButton::new(mtm) };
         unsafe {
             button.setTitle(&NSString::from_str(page.label()));
-            button.setBezelStyle(NSBezelStyle::Rounded);
+            button.setBezelStyle(NSBezelStyle::FlexiblePush);
             button.setButtonType(NSButtonType::MomentaryPushIn);
+            button.setBordered(false);
             button.setFrame(NSRect::new(
-                NSPoint::new(12.0, (WINDOW_HEIGHT as f64) - 60.0 - (i as f64) * 40.0),
-                NSSize::new((SIDEBAR_WIDTH - 24) as f64, 32.0),
+                NSPoint::new(12.0, (WINDOW_HEIGHT as f64) - 100.0 - (i as f64) * 44.0),
+                NSSize::new((SIDEBAR_WIDTH - 24) as f64, 36.0),
             ));
             let action = match page {
                 Page::Home => sel!(navHome:),
@@ -123,8 +164,8 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
                 Page::Settings => sel!(navSet:),
             };
             button.setAction(Some(action));
-            if let Some(target) = ACTION_TARGET.get() {
-                button.setTarget(Some(AsRef::<AnyObject>::as_ref(&**target)));
+            if let Some(target) = action_target() {
+                button.setTarget(Some(AsRef::<AnyObject>::as_ref(&*target)));
             }
             sidebar.addSubview(&button);
         }
@@ -155,8 +196,13 @@ fn clear_content() {
     CONTENT.with(|slot| {
         if let Some(content) = slot.borrow().as_ref() {
             unsafe {
+                // `NSArray::iter()` needs the `NSEnumerator` feature, which
+                // this crate does not enable; walk by index instead. This
+                // operates on a snapshot array, so removing subviews while
+                // iterating is safe.
                 let subviews = content.subviews();
-                for view in subviews.iter() {
+                for i in 0..subviews.count() {
+                    let view = subviews.objectAtIndex(i);
                     view.removeFromSuperview();
                 }
             }
@@ -181,13 +227,29 @@ fn update_nav_titles() {
     NAV_BUTTONS.with(|slot| {
         for (i, button) in slot.borrow().iter().enumerate() {
             let p = Page::from_index(i);
-            let title = if p == page {
-                format!("› {}", p.label())
-            } else {
-                p.label().to_string()
-            };
             unsafe {
-                button.setTitle(&NSString::from_str(&title));
+                button.setTitle(&NSString::from_str(p.label()));
+                if p == page {
+                    let (r, g, b) = theme::BRAND_RGB;
+                    button.setContentTintColor(Some(
+                        &NSColor::colorWithCalibratedRed_green_blue_alpha(
+                            r as f64 / 255.0,
+                            g as f64 / 255.0,
+                            b as f64 / 255.0,
+                            1.0,
+                        ),
+                    ));
+                } else {
+                    let (r, g, b) = theme::SIDEBAR_TEXT_RGB;
+                    button.setContentTintColor(Some(
+                        &NSColor::colorWithCalibratedRed_green_blue_alpha(
+                            r as f64 / 255.0,
+                            g as f64 / 255.0,
+                            b as f64 / 255.0,
+                            1.0,
+                        ),
+                    ));
+                }
             }
         }
     });
@@ -215,12 +277,12 @@ fn add_button(parent: &NSView, title: &str, x: f64, y: f64, w: f64, action: Sel)
     let button = unsafe { NSButton::new(mtm()) };
     unsafe {
         button.setTitle(&NSString::from_str(title));
-        button.setBezelStyle(NSBezelStyle::Rounded);
+        button.setBezelStyle(NSBezelStyle::Push);
         button.setButtonType(NSButtonType::MomentaryPushIn);
         button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 28.0)));
         button.setAction(Some(action));
-        if let Some(target) = ACTION_TARGET.get() {
-            button.setTarget(Some(AsRef::<AnyObject>::as_ref(&**target)));
+        if let Some(target) = action_target() {
+            button.setTarget(Some(AsRef::<AnyObject>::as_ref(&*target)));
         }
         parent.addSubview(&button);
     }
@@ -236,8 +298,8 @@ fn add_checkbox(parent: &NSView, title: &str, x: f64, y: f64, w: f64, on: bool, 
         let _: () = msg_send![&*button, setState: state];
         button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 24.0)));
         button.setAction(Some(action));
-        if let Some(target) = ACTION_TARGET.get() {
-            button.setTarget(Some(AsRef::<AnyObject>::as_ref(&**target)));
+        if let Some(target) = action_target() {
+            button.setTarget(Some(AsRef::<AnyObject>::as_ref(&*target)));
         }
         parent.addSubview(&button);
     }
@@ -267,20 +329,18 @@ fn add_popup(parent: &NSView, items: &[&str], selected: usize, x: f64, y: f64, w
             popup.selectItemAtIndex(selected as NSInteger);
         }
         popup.setAction(Some(action));
-        if let Some(target) = ACTION_TARGET.get() {
-            popup.setTarget(Some(AsRef::<AnyObject>::as_ref(&**target)));
+        if let Some(target) = action_target() {
+            popup.setTarget(Some(AsRef::<AnyObject>::as_ref(&*target)));
         }
         parent.addSubview(&popup);
     }
 }
 
 fn view_height() -> f64 {
+    // `NSView::frame()` is safe in this objc2-app-kit version; wrapping it in
+    // `unsafe` here would trigger `unused_unsafe` under `-D warnings`.
     CONTENT
-        .with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .map(|v| unsafe { v.frame().size.height })
-        })
+        .with(|slot| slot.borrow().as_ref().map(|v| v.frame().size.height))
         .unwrap_or(WINDOW_HEIGHT as f64)
 }
 
@@ -726,9 +786,9 @@ fn load_async_data(app: &AppHandle) {
 
 fn dispatch_rebuild() {
     // Post to main by using the action target if available.
-    if let Some(target) = ACTION_TARGET.get() {
+    if let Some(target) = action_target() {
         unsafe {
-            let _: () = msg_send![&**target, performSelectorOnMainThread: sel!(rebuild:) withObject: Option::<&AnyObject>::None waitUntilDone: false];
+            let _: () = msg_send![&*target, performSelectorOnMainThread: sel!(rebuild:) withObject: Option::<&AnyObject>::None waitUntilDone: false];
         }
     }
 }
@@ -738,11 +798,14 @@ fn field_by_tag(tag: isize) -> Option<String> {
         let content = slot.borrow();
         let content = content.as_ref()?;
         unsafe {
+            // `NSArray::iter()` needs the `NSEnumerator` feature, which this
+            // crate does not enable; walk by index instead.
             let subviews = content.subviews();
-            for view in subviews.iter() {
-                let view_tag: isize = msg_send![&**view, tag];
+            for i in 0..subviews.count() {
+                let view = subviews.objectAtIndex(i);
+                let view_tag: isize = msg_send![&*view, tag];
                 if view_tag == tag {
-                    let value: Retained<NSString> = msg_send_id![&**view, stringValue];
+                    let value: Retained<NSString> = msg_send_id![&*view, stringValue];
                     return Some(value.to_string());
                 }
             }
@@ -758,8 +821,28 @@ fn set_page(page: Page) {
     rebuild_content();
 }
 
-fn install_actions() -> Retained<NSObject> {
-    ACTION_TARGET.get_or_init(register_controller).clone()
+/// Fetch the current action-target controller, retaining a new owned
+/// reference to it. Returns `None` until `install_actions()` has run.
+///
+/// Safety: the pointer was stored from a controller created on the main
+/// thread, and is only ever retained/released on the main thread.
+fn action_target() -> Option<Retained<NSObject>> {
+    let bits = ACTION_TARGET_PTR.load(Ordering::Relaxed);
+    if bits == 0 {
+        return None;
+    }
+    unsafe { Retained::retain(bits as *mut NSObject) }
+}
+
+fn install_actions() {
+    if ACTION_TARGET_PTR.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let controller = register_controller();
+    ACTION_TARGET_PTR.store(Retained::as_ptr(&controller) as isize, Ordering::Relaxed);
+    // The pointer above now "owns" this retain count forever (until process
+    // exit); `action_target()` hands out additional temporary retains.
+    std::mem::forget(controller);
 }
 
 fn register_controller() -> Retained<NSObject> {

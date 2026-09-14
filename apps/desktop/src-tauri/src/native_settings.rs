@@ -11,11 +11,29 @@ use crate::AppState;
 
 pub const DASHBOARD_URL: &str = "https://weldspeak.com/dictionary";
 
-pub const WINDOW_WIDTH: i32 = 960;
-pub const WINDOW_HEIGHT: i32 = 680;
-pub const WINDOW_MIN_WIDTH: i32 = 720;
-pub const WINDOW_MIN_HEIGHT: i32 = 520;
-pub const SIDEBAR_WIDTH: i32 = 180;
+pub const WINDOW_WIDTH: i32 = 980;
+pub const WINDOW_HEIGHT: i32 = 700;
+pub const WINDOW_MIN_WIDTH: i32 = 760;
+pub const WINDOW_MIN_HEIGHT: i32 = 540;
+pub const SIDEBAR_WIDTH: i32 = 200;
+
+/// Shared Hub palette (brand-aligned, light content + dark rail).
+pub mod theme {
+    /// Content background `#faf9f6`
+    pub const CONTENT_BG_RGB: (u8, u8, u8) = (0xfa, 0xf9, 0xf6);
+    /// Sidebar `#1c1f1d`
+    pub const SIDEBAR_BG_RGB: (u8, u8, u8) = (0x1c, 0x1f, 0x1d);
+    /// Selected nav chip `#2a2e2b`
+    pub const SIDEBAR_CHIP_RGB: (u8, u8, u8) = (0x2a, 0x2e, 0x2b);
+    /// Brand orange `#de713e`
+    pub const BRAND_RGB: (u8, u8, u8) = (0xde, 0x71, 0x3e);
+    /// Primary text `#242723`
+    pub const TEXT_RGB: (u8, u8, u8) = (0x24, 0x27, 0x23);
+    /// Muted text `#666d63`
+    pub const MUTED_RGB: (u8, u8, u8) = (0x66, 0x6d, 0x63);
+    /// Sidebar label `#f3f2ee`
+    pub const SIDEBAR_TEXT_RGB: (u8, u8, u8) = (0xf3, 0xf2, 0xee);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {

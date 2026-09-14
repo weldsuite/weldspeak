@@ -8,7 +8,8 @@ use tauri::{AppHandle, Manager};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, SetBkColor, SetBkMode, SetTextColor, HDC, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, FillRect, InvalidateRect, SetBkColor, SetBkMode, SetTextColor,
+    HBRUSH, HDC, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -17,14 +18,14 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetClientRect, GetDlgItem, GetWindowLongPtrW, IsWindow,
-    LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-    GWLP_USERDATA, HMENU, IDC_ARROW, MINMAXINFO, SW_HIDE, SW_SHOWNORMAL, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORLISTBOX,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_SIZE,
-    WNDCLASSW, WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, GetClientRect, GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW,
+    IsWindow, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CS_HREDRAW, CS_VREDRAW,
+    CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, MINMAXINFO, SW_HIDE, SW_SHOWNORMAL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
+    WM_KEYUP, WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const BM_GETCHECK: u32 = 0x00F0;
@@ -58,7 +59,7 @@ const EM_SETCUEBANNER: u32 = 0x1501;
 
 use crate::hotkey;
 use crate::native_settings::{
-    self, Page, DASHBOARD_URL, LOCALES, SIDEBAR_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_HEIGHT,
+    self, theme, Page, DASHBOARD_URL, LOCALES, SIDEBAR_WIDTH, WINDOW_HEIGHT, WINDOW_MIN_HEIGHT,
     WINDOW_MIN_WIDTH, WINDOW_WIDTH,
 };
 use crate::settings::InjectionPreference;
@@ -103,6 +104,12 @@ const ID_ORG: i32 = 113;
 const ID_ACCOUNT: i32 = 114;
 const ID_FOOTER: i32 = 115;
 const ID_SIDEBAR: i32 = 51;
+const ID_BRAND: i32 = 50;
+
+/// COLORREF is 0x00BBGGRR.
+fn rgb(c: (u8, u8, u8)) -> COLORREF {
+    COLORREF(u32::from(c.2) << 16 | u32::from(c.1) << 8 | u32::from(c.0))
+}
 
 const WM_REFRESH: u32 = WM_APP + 20;
 const WM_TRANSCRIPTS: u32 = WM_APP + 21;
@@ -119,6 +126,22 @@ static TRANSCRIPTS: Mutex<Vec<crate::commands::TranscriptRecord>> = Mutex::new(V
 static DICTIONARY: Mutex<Vec<crate::commands::DictionaryTerm>> = Mutex::new(Vec::new());
 static DICT_FILTER: Mutex<String> = Mutex::new(String::new());
 static STATUS: Mutex<Option<crate::commands::Status>> = Mutex::new(None);
+static CONTENT_BRUSH: OnceLock<isize> = OnceLock::new();
+static SIDEBAR_BRUSH: OnceLock<isize> = OnceLock::new();
+
+fn content_brush() -> HBRUSH {
+    let bits = *CONTENT_BRUSH.get_or_init(|| unsafe {
+        CreateSolidBrush(rgb(theme::CONTENT_BG_RGB)).0 as isize
+    });
+    HBRUSH(bits as *mut c_void)
+}
+
+fn sidebar_brush() -> HBRUSH {
+    let bits = *SIDEBAR_BRUSH.get_or_init(|| unsafe {
+        CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB)).0 as isize
+    });
+    HBRUSH(bits as *mut c_void)
+}
 
 #[repr(C)]
 struct LvColumnW {
@@ -206,7 +229,7 @@ unsafe fn create_window(app: &AppHandle) {
         lpfnWndProc: Some(wnd_proc),
         hInstance: module(),
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: CreateSolidBrush(COLORREF(0x00F6_F9FA)),
+        hbrBackground: CreateSolidBrush(rgb(theme::CONTENT_BG_RGB)),
         lpszClassName: class,
         ..Default::default()
     };
@@ -234,6 +257,7 @@ unsafe fn create_window(app: &AppHandle) {
     let _ = SetForegroundWindow(window);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn child(
     parent: HWND,
     class: PCWSTR,
@@ -289,6 +313,17 @@ fn spawn_shell(parent: HWND) {
         WINDOW_HEIGHT,
         ID_SIDEBAR,
     );
+    child(
+        parent,
+        w!("STATIC"),
+        w!("WeldSpeak"),
+        WINDOW_STYLE(0),
+        20,
+        22,
+        SIDEBAR_WIDTH - 32,
+        28,
+        ID_BRAND,
+    );
     let nav = [
         (ID_NAV_HOME, "Home"),
         (ID_NAV_DICT, "Dictionary"),
@@ -301,11 +336,11 @@ fn spawn_shell(parent: HWND) {
             parent,
             w!("BUTTON"),
             PCWSTR(wide.as_ptr()),
-            WINDOW_STYLE(WS_TABSTOP.0 | BS_PUSHBUTTON),
-            12,
-            24 + (i as i32) * 40,
-            SIDEBAR_WIDTH - 24,
-            32,
+            WINDOW_STYLE(WS_TABSTOP.0 | BS_PUSHBUTTON | 0x8000), // BS_FLAT
+            14,
+            72 + (i as i32) * 44,
+            SIDEBAR_WIDTH - 28,
+            36,
             *id,
         );
     }
@@ -934,17 +969,16 @@ fn switch_page(parent: HWND, page: Page) {
     }
     // Nav highlight via enable state is weak; just ensure visibility of shell.
     show_child(parent, ID_SIDEBAR, true);
+    show_child(parent, ID_BRAND, true);
     for (i, id) in [ID_NAV_HOME, ID_NAV_DICT, ID_NAV_SNIP, ID_NAV_SET]
         .iter()
         .enumerate()
     {
         show_child(parent, *id, true);
-        let label = if Page::from_index(i) == page {
-            format!("› {}", Page::from_index(i).label())
-        } else {
-            Page::from_index(i).label().to_string()
-        };
-        set_text(find_child(parent, *id), &label);
+        set_text(find_child(parent, *id), Page::from_index(i).label());
+    }
+    unsafe {
+        let _ = InvalidateRect(parent, None, true);
     }
     if let Some(app) = APP.get() {
         apply_page(parent, page, app);
@@ -962,6 +996,27 @@ fn layout(parent: HWND) {
     let list_h = (h - 160).max(120);
     unsafe {
         let _ = MoveWindow(find_child(parent, ID_SIDEBAR), 0, 0, SIDEBAR_WIDTH, h, true);
+        let _ = MoveWindow(
+            find_child(parent, ID_BRAND),
+            20,
+            22,
+            SIDEBAR_WIDTH - 32,
+            28,
+            true,
+        );
+        for (i, id) in [ID_NAV_HOME, ID_NAV_DICT, ID_NAV_SNIP, ID_NAV_SET]
+            .iter()
+            .enumerate()
+        {
+            let _ = MoveWindow(
+                find_child(parent, *id),
+                14,
+                72 + (i as i32) * 44,
+                SIDEBAR_WIDTH - 28,
+                36,
+                true,
+            );
+        }
         let _ = MoveWindow(
             find_child(parent, ID_HOME_LIST),
             SIDEBAR_WIDTH + 24,
@@ -1372,7 +1427,7 @@ unsafe extern "system" fn wnd_proc(
             let mut rect = RECT::default();
             let _ = GetClientRect(window, &mut rect);
             unsafe {
-                let brush = CreateSolidBrush(COLORREF(0x00F6_F9FA));
+                let brush = CreateSolidBrush(rgb(theme::CONTENT_BG_RGB));
                 let _ = FillRect(hdc, &rect, brush);
                 let sidebar = RECT {
                     left: 0,
@@ -1380,21 +1435,56 @@ unsafe extern "system" fn wnd_proc(
                     right: SIDEBAR_WIDTH,
                     bottom: rect.bottom,
                 };
-                let side = CreateSolidBrush(COLORREF(0x00EE_F1F2));
+                let side = CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB));
                 let _ = FillRect(hdc, &sidebar, side);
+
+                // Accent bar + selected nav chip.
+                let accent = CreateSolidBrush(rgb(theme::BRAND_RGB));
+                let accent_bar = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 3,
+                    bottom: rect.bottom,
+                };
+                let _ = FillRect(hdc, &accent_bar, accent);
+
+                let page = Page::from_index(PAGE.load(Ordering::Relaxed));
+                let chip_y = 72 + (page.index() as i32) * 44;
+                let chip = RECT {
+                    left: 14,
+                    top: chip_y,
+                    right: SIDEBAR_WIDTH - 14,
+                    bottom: chip_y + 36,
+                };
+                let chip_brush = CreateSolidBrush(rgb(theme::SIDEBAR_CHIP_RGB));
+                let _ = FillRect(hdc, &chip, chip_brush);
+
                 let _ = DeleteObject(brush);
                 let _ = DeleteObject(side);
+                let _ = DeleteObject(accent);
+                let _ = DeleteObject(chip_brush);
             }
             LRESULT(1)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => {
             let hdc = HDC(wparam.0 as *mut c_void);
+            let ctrl = HWND(lparam.0 as *mut c_void);
+            let id = unsafe { GetDlgCtrlID(ctrl) };
+            let nav = matches!(
+                id,
+                ID_NAV_HOME | ID_NAV_DICT | ID_NAV_SNIP | ID_NAV_SET | ID_BRAND | ID_SIDEBAR
+            );
             unsafe {
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, COLORREF(0x0023_2724));
-                SetBkColor(hdc, COLORREF(0x00F6_F9FA));
+                if nav {
+                    SetTextColor(hdc, rgb(theme::SIDEBAR_TEXT_RGB));
+                    SetBkColor(hdc, rgb(theme::SIDEBAR_BG_RGB));
+                    return LRESULT(sidebar_brush().0 as isize);
+                }
+                SetTextColor(hdc, rgb(theme::TEXT_RGB));
+                SetBkColor(hdc, rgb(theme::CONTENT_BG_RGB));
             }
-            LRESULT(CreateSolidBrush(COLORREF(0x00F6_F9FA)).0 as isize)
+            LRESULT(content_brush().0 as isize)
         }
         WM_GETMINMAXINFO => {
             let info = lparam.0 as *mut MINMAXINFO;

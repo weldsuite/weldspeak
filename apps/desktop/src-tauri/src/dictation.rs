@@ -59,6 +59,13 @@ pub fn begin(app: &AppHandle) {
     // like nothing happened — the Wispr Flow complaint.
     crate::overlay::appear_listening(app);
     crate::media::pause_if_enabled(app);
+    // Retain speech spoken while the socket opens. Idle pre-roll is only 300 ms;
+    // without this, a quick tap finishes before `ready` and the utterance ages out.
+    if let Ok(capture) = state.capture.lock() {
+        if let Some(capture) = capture.as_ref() {
+            capture.hold();
+        }
+    }
     perform(app, actions);
 }
 
@@ -215,8 +222,8 @@ fn open_socket(app: &AppHandle) {
 fn start_streaming(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    // Arming hands back the pre-roll: the audio from just before the key went
-    // down, which is where the first syllable lives.
+    // Arming hands back everything held since hotkey-down (idle lead-in plus
+    // speech spoken while waiting for `ready`).
     let preroll = state
         .capture
         .lock()

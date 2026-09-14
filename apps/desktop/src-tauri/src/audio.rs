@@ -190,6 +190,13 @@ impl Capture {
         Ok((stream, shared, level))
     }
 
+    /// Begin retaining frames until [`Self::arm`] (hotkey-down).
+    pub fn hold(&self) {
+        if let Ok(mut pipeline) = self.shared.lock() {
+            pipeline.framer.hold();
+        }
+    }
+
     /// Begin sending frames, returning the retained pre-roll to send first.
     pub fn arm(&self) -> Vec<Frame> {
         self.shared

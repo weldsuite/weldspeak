@@ -144,8 +144,7 @@ describe("cleanup", () => {
     await cleanupTranscript(env, "hello", []);
 
     expect(seenModel).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
-    // Cleanup is a rewrite, not a creative task; near-greedy decoding stops the
-    // model paraphrasing what it was told to preserve.
+    // Cleanup is near-greedy polish; stay ≤0.2 so the model does not wander.
     expect(seenInput.temperature).toBeLessThanOrEqual(0.2);
     expect(
       (seenInput.chat_template_kwargs as { enable_thinking?: boolean } | undefined)

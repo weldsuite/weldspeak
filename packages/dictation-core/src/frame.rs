@@ -11,6 +11,11 @@
 //! Keeping the microphone running and retaining the last few hundred
 //! milliseconds costs one small ring buffer and removes an entire class of
 //! "it misheard me" complaints.
+//!
+//! A second buffer mode covers the opposite race: the user speaks and releases
+//! before the server says `ready`. Idle pre-roll is a 300 ms ring; once the
+//! hotkey is down we *hold* every frame until streaming starts, so a slow
+//! socket cannot age the utterance out of the ring.
 
 use std::collections::VecDeque;
 use weldspeak_protocol::audio::{FRAME_SAMPLES, PREROLL_FRAMES};
@@ -18,13 +23,22 @@ use weldspeak_protocol::audio::{FRAME_SAMPLES, PREROLL_FRAMES};
 /// One 20 ms frame of `linear16` audio, ready for the wire.
 pub type Frame = Vec<u8>;
 
+/// Cap on audio retained between hotkey-down and `ready`.
+///
+/// Long enough for a slow Durable Object + upstream handshake; short enough
+/// that a wedged session cannot grow without bound.
+const HOLD_MAX_FRAMES: usize = 1_500; // 30 s at 20 ms/frame
+
 /// Accumulates samples into frames, retaining a pre-roll while idle.
 pub struct Framer {
     /// Samples not yet forming a whole frame.
     pending: Vec<i16>,
-    /// Recent frames captured before the hotkey went down.
+    /// Recent frames captured before the hotkey went down — or, while holding,
+    /// every frame since the press.
     preroll: VecDeque<Frame>,
     armed: bool,
+    /// Hotkey is down (or was): grow `preroll` without the idle ring eviction.
+    holding: bool,
 }
 
 impl Default for Framer {
@@ -39,6 +53,7 @@ impl Framer {
             pending: Vec::with_capacity(FRAME_SAMPLES * 2),
             preroll: VecDeque::with_capacity(PREROLL_FRAMES + 1),
             armed: false,
+            holding: false,
         }
     }
 
@@ -47,18 +62,31 @@ impl Framer {
         self.armed
     }
 
-    /// Frames currently held in the pre-roll.
+    /// Whether this utterance is retaining audio until streaming starts.
+    pub fn is_holding(&self) -> bool {
+        self.holding
+    }
+
+    /// Frames currently held in the pre-roll / hold buffer.
     pub fn preroll_len(&self) -> usize {
         self.preroll.len()
     }
 
-    /// Begin capturing, returning the retained pre-roll to send first.
+    /// Start retaining every frame until [`Self::arm`].
     ///
-    /// Called on hotkey-down. The returned frames are the audio from just
-    /// *before* the press — the beginning of the word the user has already
-    /// started saying.
+    /// Called on hotkey-down. Keeps the existing idle pre-roll (lead-in before
+    /// the press) and then appends speech spoken while the socket opens.
+    pub fn hold(&mut self) {
+        self.holding = true;
+    }
+
+    /// Begin streaming, returning every frame retained so far to send first.
+    ///
+    /// Called when the server is ready. The returned frames are the idle
+    /// lead-in plus anything spoken while waiting — not only the last 300 ms.
     pub fn arm(&mut self) -> Vec<Frame> {
         self.armed = true;
+        self.holding = false;
         self.preroll.drain(..).collect()
     }
 
@@ -69,14 +97,16 @@ impl Framer {
     /// matters.
     pub fn disarm(&mut self) {
         self.armed = false;
+        self.holding = false;
         self.pending.clear();
         self.preroll.clear();
     }
 
     /// Feed samples; get back whole frames to send.
     ///
-    /// While disarmed the frames go to the pre-roll instead and the result is
-    /// empty — the microphone keeps running so there is something to pre-roll.
+    /// While disarmed the frames go to the pre-roll / hold buffer instead and
+    /// the result is empty — the microphone keeps running so there is something
+    /// to flush when streaming starts.
     pub fn push(&mut self, samples: &[i16]) -> Vec<Frame> {
         self.pending.extend_from_slice(samples);
 
@@ -89,9 +119,13 @@ impl Framer {
             if self.armed {
                 ready.push(frame);
             } else {
-                // Ring behaviour: the pre-roll holds the most recent audio and
-                // nothing older, so idle time costs a fixed, tiny amount of memory.
-                if self.preroll.len() == PREROLL_FRAMES {
+                let cap = if self.holding {
+                    HOLD_MAX_FRAMES
+                } else {
+                    PREROLL_FRAMES
+                };
+                // Ring while idle; much larger ring while holding for `ready`.
+                if self.preroll.len() == cap {
                     self.preroll.pop_front();
                 }
                 self.preroll.push_back(frame);
@@ -238,14 +272,41 @@ mod tests {
     }
 
     #[test]
+    fn hold_keeps_speech_while_waiting_for_ready() {
+        // Idle ring would drop everything older than 300 ms; holding must not,
+        // or a quick tap before `ready` arrives ships silence.
+        let mut framer = Framer::new();
+        framer.push(&ramp(FRAME_SAMPLES * 3));
+        framer.hold();
+
+        framer.push(&ramp(FRAME_SAMPLES * (PREROLL_FRAMES + 20)));
+
+        let held = framer.arm();
+        assert_eq!(held.len(), 3 + PREROLL_FRAMES + 20);
+        assert!(framer.is_armed());
+        assert!(!framer.is_holding());
+    }
+
+    #[test]
+    fn hold_still_caps_a_wedged_session() {
+        let mut framer = Framer::new();
+        framer.hold();
+        framer.push(&ramp(FRAME_SAMPLES * (HOLD_MAX_FRAMES + 25)));
+
+        assert_eq!(framer.preroll_len(), HOLD_MAX_FRAMES);
+    }
+
+    #[test]
     fn disarming_clears_everything() {
         let mut framer = Framer::new();
+        framer.hold();
         framer.arm();
         framer.push(&ramp(FRAME_SAMPLES + 7));
 
         framer.disarm();
 
         assert!(!framer.is_armed());
+        assert!(!framer.is_holding());
         assert_eq!(framer.preroll_len(), 0);
         // The half-frame left over must not leak into the next utterance.
         assert!(framer.push(&ramp(FRAME_SAMPLES - 1)).is_empty());
