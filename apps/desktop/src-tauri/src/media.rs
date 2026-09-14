@@ -141,15 +141,17 @@ mod platform {
     fn mute_other_sessions() -> Vec<u32> {
         let us = std::process::id();
         let mut muted = Vec::new();
-        let Ok(enumerator) =
-            (unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) })
+        let Ok(enumerator) = (unsafe {
+            CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+        }) else {
+            return muted;
+        };
+        let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) })
         else {
             return muted;
         };
-        let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }) else {
-            return muted;
-        };
-        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }) else {
+        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
+        else {
             return muted;
         };
         let Ok(collection) = (unsafe { manager.GetSessionEnumerator() }) else {
@@ -198,15 +200,17 @@ mod platform {
         if pids.is_empty() {
             return;
         }
-        let Ok(enumerator) =
-            (unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) })
+        let Ok(enumerator) = (unsafe {
+            CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+        }) else {
+            return;
+        };
+        let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) })
         else {
             return;
         };
-        let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }) else {
-            return;
-        };
-        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }) else {
+        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
+        else {
             return;
         };
         let Ok(collection) = (unsafe { manager.GetSessionEnumerator() }) else {

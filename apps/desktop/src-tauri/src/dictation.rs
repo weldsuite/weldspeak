@@ -97,6 +97,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             Action::SendStop => {
                 send(app, Outbound::Control(ClientFrame::Stop));
                 let _ = app.emit("weldspeak://thinking", ());
+                crate::overlay::appear_thinking(app);
             }
             Action::SendCancel => {
                 send(app, Outbound::Control(ClientFrame::Cancel));
@@ -123,6 +124,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 let text = crate::learn::apply(&text, &corrections);
                 remember_transcript(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
+                crate::native_settings::on_history_changed();
 
                 // The injector reports completion by driving the machine on;
                 // without this the session would never return to idle.
@@ -157,12 +159,10 @@ fn open_socket(app: &AppHandle) {
         )
     };
 
-    let Some(access_token) = state
-        .auth
-        .lock()
-        .ok()
-        .and_then(|auth| auth.access_token(weldspeak_core::auth::now_secs()).map(str::to_owned))
-    else {
+    let Some(access_token) = state.auth.lock().ok().and_then(|auth| {
+        auth.access_token(weldspeak_core::auth::now_secs())
+            .map(str::to_owned)
+    }) else {
         fail(app, "Sign in to WeldSpeak before dictating.");
         return;
     };

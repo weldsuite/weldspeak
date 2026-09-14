@@ -40,7 +40,8 @@ const KEY_V: u16 = 0x09;
 const CHUNK_CHARS: usize = 20;
 
 extern "C" {
-    fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef) -> bool;
+    fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef)
+        -> bool;
 }
 
 /// Whether Accessibility permission has been granted.
@@ -158,11 +159,8 @@ pub fn focused_text() -> Option<String> {
         }
         let focused_attr = CFString::from_static_string("AXFocusedUIElement");
         let mut focused: *const std::ffi::c_void = std::ptr::null();
-        let status = AXUIElementCopyAttributeValue(
-            system,
-            focused_attr.as_concrete_TypeRef(),
-            &mut focused,
-        );
+        let status =
+            AXUIElementCopyAttributeValue(system, focused_attr.as_concrete_TypeRef(), &mut focused);
         CFRelease(system);
         if status != 0 || focused.is_null() {
             return None;

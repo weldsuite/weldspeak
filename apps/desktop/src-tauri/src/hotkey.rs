@@ -6,9 +6,9 @@
 //!
 //! Detection is a short poll of the physical key state (`GetAsyncKeyState` /
 //! `CGEventSourceKeyState`). A `WH_KEYBOARD_LL` callback is too easy for
-//! Windows to skip or silently unhook — especially while our own WebView2
-//! settings window, or Chrome, has focus — and calling into Tauri from that
-//! callback is enough work to trip the system's hook timeout.
+//! Windows to skip or silently unhook — especially while another app has
+//! focus — and calling into Tauri from that callback is enough work to trip
+//! the system's hook timeout.
 //!
 //! Bindings are KeyboardEvent `code` strings (`ControlRight`, `KeyA`, or
 //! `ControlRight+MetaLeft`) captured in Settings, then polled by native code.
@@ -17,6 +17,12 @@
 mod codes;
 
 pub use codes::{label, parse_codes, types_while_held};
+
+#[cfg(target_os = "windows")]
+pub use codes::code_from_windows_vk;
+
+#[cfg(target_os = "macos")]
+pub use codes::code_from_macos_hid;
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -133,6 +139,35 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// First currently held bindable key, for native Settings capture.
+pub fn first_held_code() -> Option<String> {
+    const CANDIDATES: &[&str] = &[
+        "ControlRight",
+        "ControlLeft",
+        "AltRight",
+        "AltLeft",
+        "ShiftRight",
+        "ShiftLeft",
+        "MetaRight",
+        "MetaLeft",
+        "F8",
+        "F9",
+        "F7",
+        "F6",
+        "F5",
+        "CapsLock",
+        "Space",
+    ];
+    for code in CANDIDATES {
+        if let Some(native) = codes::native_code(code) {
+            if platform::is_down(native) {
+                return Some((*code).into());
+            }
+        }
+    }
+    None
+}
+
 /// Hint shown under the bind button when the key will also type.
 pub fn hold_warning(accelerator: &str) -> Option<String> {
     if types_while_held(accelerator) {
@@ -221,10 +256,8 @@ fn poll_loop() {
         }
 
         if escape && !escape_held && phase != Phase::Idle {
-            if matches!(phase, Phase::Ptt | Phase::HandsFree | Phase::Pressed) {
-                if matches!(phase, Phase::Ptt | Phase::HandsFree) {
-                    dispatch_end(true);
-                }
+            if matches!(phase, Phase::Ptt | Phase::HandsFree) {
+                dispatch_end(true);
             }
             phase = Phase::Idle;
             pressed_at = None;
@@ -242,8 +275,8 @@ fn poll_loop() {
             }
             Phase::Pressed => {
                 if !key_down {
-                    let is_double = last_short_release
-                        .is_some_and(|t| now.duration_since(t) < DOUBLE_TAP);
+                    let is_double =
+                        last_short_release.is_some_and(|t| now.duration_since(t) < DOUBLE_TAP);
                     if is_double {
                         phase = Phase::HandsFree;
                         last_short_release = None;
@@ -282,7 +315,7 @@ fn poll_loop() {
 }
 
 fn dispatch_begin() {
-    dispatch(|app| crate::dictation::begin(app));
+    dispatch(crate::dictation::begin);
 }
 
 fn dispatch_end(cancel: bool) {

@@ -173,11 +173,7 @@ impl Capture {
         );
 
         let shared = Arc::new(Mutex::new(Pipeline {
-            resampler: Resampler::new(
-                config.sample_rate.0,
-                config.channels as usize,
-                SAMPLE_RATE,
-            ),
+            resampler: Resampler::new(config.sample_rate.0, config.channels as usize, SAMPLE_RATE),
             framer: Framer::new(),
         }));
 
@@ -237,9 +233,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[i16], _| {
-                        process(&shared, &level, &frames, &convert(data))
-                    },
+                    move |data: &[i16], _| process(&shared, &level, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -250,9 +244,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[u16], _| {
-                        process(&shared, &level, &frames, &convert(data))
-                    },
+                    move |data: &[u16], _| process(&shared, &level, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -278,7 +270,9 @@ fn process(
     // Peak with instant attack and a short release so the overlay can track
     // speech. Raw RMS of conversational mic input is ~0.02 and would look like
     // silence if drawn linearly.
-    let peak = samples.iter().fold(0.0f32, |max, sample| max.max(sample.abs()));
+    let peak = samples
+        .iter()
+        .fold(0.0f32, |max, sample| max.max(sample.abs()));
     let rms = rms_f32(samples);
     let instant = peak.max(rms * 1.8);
     let previous = f32::from_bits(level.load(Ordering::Relaxed));

@@ -18,9 +18,10 @@ import type { Env } from "./env.js";
 /**
  * Deadline for the cleanup pass.
  *
- * Long enough for GLM-4.7-Flash to finish punctuation and homophone fixes.
- * Thinking is turned off on the request so the budget is spent on the rewrite,
- * not a hidden reasoning trace.
+ * Long enough for Llama 4 Scout to finish punctuation and homophone fixes
+ * (p95 was under 1 s in Workers AI benches). Thinking is turned off on the
+ * request so any reasoning-capable model spends the budget on the rewrite,
+ * not a hidden trace.
  */
 export const CLEANUP_TIMEOUT_MS = 2_500;
 
@@ -171,7 +172,7 @@ export interface CleanupResult {
 /**
  * Pull the rewritten transcript out of either Workers AI response shape.
  *
- * Llama models return `{ response }`. GLM-4.7-Flash uses the chat-completions
+ * Some Workers AI models return `{ response }`; others use the chat-completions
  * shape `{ choices: [{ message: { content } }] }`. Treating only the first as
  * success would make every cleanup miss and ship raw speech.
  */
@@ -219,8 +220,8 @@ export async function cleanupTranscript(
         // Cleaned text is never much longer than its input; this caps a runaway
         // generation without truncating legitimate output.
         max_tokens: Math.min(2048, Math.max(512, trimmed.length + 128)),
-        // GLM-4.7-Flash reasons by default. That would eat the deadline and
-        // leak a thinking trace into whatever the user was typing into.
+        // Reasoning models default to thinking. That would eat the deadline and
+        // leak a trace into whatever the user was typing into.
         chat_template_kwargs: { enable_thinking: false },
       } as never));
 

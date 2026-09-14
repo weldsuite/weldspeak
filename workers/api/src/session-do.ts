@@ -23,14 +23,22 @@ import {
   type StartFrame,
 } from "@weldspeak/protocol";
 import type { Env } from "./env.js";
+import {
+  countWords,
+  FREE_MONTHLY_WORD_CAP,
+  isWordQuotaExceeded,
+  type Entitlement,
+} from "./billing/entitlements.js";
 import { cleanupTranscript } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
-import { loadOrgSettings, orgUsageSeconds } from "./routes/org.js";
+import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
 
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
 export interface SessionIdentity {
   userId: string;
   orgId: string | null;
+  /** Snapshot from the access token at connection time. */
+  entitlement: Entitlement;
 }
 
 /**
@@ -145,8 +153,17 @@ export class DictationSession extends DurableObject<Env> {
 
     const identity = this.#identity!;
 
-    // Quota is checked before any audio is accepted, so an org past its cap is
-    // told immediately rather than after paying for a transcription.
+    // Free-tier word cap is per person (UTC calendar month), across orgs.
+    const wordsUsed = await userWordCount(this.env.DB, identity.userId);
+    if (isWordQuotaExceeded(identity.entitlement, wordsUsed)) {
+      this.#fail(
+        "quota_exceeded",
+        `Free plan is ${FREE_MONTHLY_WORD_CAP.toLocaleString("en-US")} words per month. Subscribe at https://weldspeak.com/pricing`,
+      );
+      return;
+    }
+
+    // Optional org minute cap is an admin policy on top (paid orgs).
     const settings = await loadOrgSettings(this.env.DB, identity.orgId);
     if (settings?.monthlyMinuteCap != null) {
       const used = await orgUsageSeconds(this.env.DB, identity.orgId);
@@ -358,14 +375,17 @@ export class DictationSession extends DurableObject<Env> {
   ): Promise<void> {
     const day = new Date().toISOString().slice(0, 10);
     const audioSeconds = Math.round(durationMs / 1000);
+    const wordCount = countWords(formatted);
 
     const statements = [
       this.env.DB.prepare(
-        `INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds, word_count)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT (clerk_org_id, clerk_user_id, day)
-         DO UPDATE SET audio_seconds = audio_seconds + excluded.audio_seconds`,
-      ).bind(identity.orgId ?? "", identity.userId, day, audioSeconds),
+         DO UPDATE SET
+           audio_seconds = audio_seconds + excluded.audio_seconds,
+           word_count = word_count + excluded.word_count`,
+      ).bind(identity.orgId ?? "", identity.userId, day, audioSeconds, wordCount),
     ];
 
     // An admin who turned retention off means it: no server-side copy at all.

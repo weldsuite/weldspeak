@@ -36,7 +36,7 @@ packages/protocol-rs      The same protocol, for Rust
 packages/dictation-core   Portable client logic: audio, session, injection policy
 workers/api               Cloudflare Worker: auth, dictation relay, org data
 apps/web                  Dashboard: sign-in, device approval, team, glossary
-apps/desktop              Tauri client: tray, hotkey, microphone, injection
+apps/desktop              Native tray client: Win32/AppKit hub, overlay, hotkey, injection
 ```
 
 ## Setup
@@ -87,7 +87,20 @@ For the dashboard:
 cp apps/web/.env.example apps/web/.env.local   # add your pk_...
 ```
 
+### Billing
+
+Per-person Clerk Billing (B2C): **$10 / person / month**, free tier **2,000
+words / calendar month (UTC)**. Paid and WeldSuite-included users are uncapped.
+
+Dashboard setup (plan slug `weldspeak`, features `unlimited_words` and
+`weldsuite`) is documented in [`docs/clerk-billing.md`](docs/clerk-billing.md).
+Checkout lives at `/pricing`.
+
 ### 3. Run it
+
+The desktop app is a native tray utility (Win32 / AppKit — no webview).
+Open WeldSpeak from the tray for History, Dictionary, Snippets, and Settings.
+Hold the hotkey, speak, release, and the text appears wherever you were typing.
 
 ```bash
 pnpm --filter @weldspeak/web dev     # dashboard on :5173
@@ -127,9 +140,10 @@ provisioning.
 
 ### Choosing the cleanup model
 
-`CLEANUP_MODEL` is `@cf/zai-org/glm-4.7-flash`. It is fast enough for the 2.5 s
-cleanup deadline, follows rewrite instructions well, and thinking is turned off
-on the request so a reasoning trace cannot leak into the inserted text.
+`CLEANUP_MODEL` is `@cf/meta/llama-4-scout-17b-16e-instruct`. It clears the
+2.5 s cleanup deadline with room to spare, follows rewrite instructions well,
+and thinking is turned off on the request so a reasoning trace cannot leak into
+the inserted text.
 
 The glossary still matters for the recognizer: with `Inconel 625` in
 `dictionary_terms`, keyterm boost yields the term before cleanup even runs.

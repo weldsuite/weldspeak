@@ -196,8 +196,10 @@ fn windows_poll_keys(prev: &mut [bool; 256]) -> (DownNow, String) {
     let _ = unsafe { GetKeyboardState(&mut keyboard) };
 
     for vk in 0x20u32..=0xFE {
-        if matches!(vk, VK_SHIFT | VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN | VK_BACK | VK_DELETE)
-        {
+        if matches!(
+            vk,
+            VK_SHIFT | VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN | VK_BACK | VK_DELETE
+        ) {
             continue;
         }
         let held = down(vk);

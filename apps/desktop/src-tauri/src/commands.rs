@@ -8,7 +8,7 @@ use weldspeak_core::auth::now_secs;
 use crate::settings::Settings;
 use crate::{api, auth, hotkey, inject, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub signed_in: bool,
@@ -118,9 +118,7 @@ pub fn update_settings(
         }
 
         *settings = serde_json::from_value(merged).map_err(|e| e.to_string())?;
-        settings
-            .save(&path)
-            .map_err(|error| error.to_string())?;
+        settings.save(&path).map_err(|error| error.to_string())?;
         settings.clone()
     };
 
@@ -240,6 +238,7 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
 
                 use tauri::Emitter;
                 let _ = app.emit("weldspeak://signed-in", ());
+                crate::native_settings::on_signed_in();
             }
             Err(error) => {
                 tracing::warn!(%error, "sign-in did not complete");
@@ -255,7 +254,7 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
 }
 
 /// Open `url` in the user's default browser without going through the webview.
-fn open_in_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;

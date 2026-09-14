@@ -238,11 +238,11 @@ describe("usage", () => {
     const day = new Date().toISOString().slice(0, 10);
     await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds) VALUES (?, ?, ?, ?)",
-      ).bind(ORG_ACME, ADMIN_USER, day, 120),
+        "INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds, word_count) VALUES (?, ?, ?, ?, ?)",
+      ).bind(ORG_ACME, ADMIN_USER, day, 120, 400),
       env.DB.prepare(
-        "INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds) VALUES (?, ?, ?, ?)",
-      ).bind(ORG_ACME, MEMBER_USER, day, 60),
+        "INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds, word_count) VALUES (?, ?, ?, ?, ?)",
+      ).bind(ORG_ACME, MEMBER_USER, day, 60, 200),
     ]);
   });
 
@@ -252,8 +252,17 @@ describe("usage", () => {
       org: ORG_ACME,
     });
 
-    const body = await response.json<{ audioSeconds: number; byUser: unknown[] }>();
+    const body = await response.json<{
+      audioSeconds: number;
+      wordCount: number;
+      monthlyWordCap: number | null;
+      entitlement: string;
+      byUser: unknown[];
+    }>();
     expect(body.audioSeconds).toBe(180);
+    expect(body.wordCount).toBe(400);
+    expect(body.monthlyWordCap).toBe(2000);
+    expect(body.entitlement).toBe("free");
     expect(body.byUser).toHaveLength(2);
   });
 
@@ -265,10 +274,28 @@ describe("usage", () => {
 
     const body = await response.json<{
       audioSeconds: number;
-      byUser: Array<{ userId: string }>;
+      wordCount: number;
+      byUser: Array<{ userId: string; audioSeconds: number; wordCount: number }>;
     }>();
 
     expect(body.audioSeconds).toBe(180);
-    expect(body.byUser).toEqual([{ userId: MEMBER_USER, audioSeconds: 60 }]);
+    expect(body.wordCount).toBe(200);
+    expect(body.byUser).toEqual([
+      { userId: MEMBER_USER, audioSeconds: 60, wordCount: 200 },
+    ]);
+  });
+
+  it("reports uncapped words for a paid entitlement on the token", async () => {
+    const response = await call("/api/org/usage", {
+      token: await tokenFor(MEMBER_USER, acmeMember, "device_test", "paid"),
+      org: ORG_ACME,
+    });
+
+    const body = await response.json<{
+      monthlyWordCap: number | null;
+      entitlement: string;
+    }>();
+    expect(body.entitlement).toBe("paid");
+    expect(body.monthlyWordCap).toBeNull();
   });
 });

@@ -75,9 +75,22 @@ function membershipPayload(membership: OrgMembership, userId: string) {
   };
 }
 
+export type StubBilling =
+  | { kind: "none" }
+  | {
+      kind: "plan";
+      slug: string;
+      features?: string[];
+      status?: "active" | "trialing" | "ended";
+    };
+
 export interface ClerkStub {
   /** Change what Clerk reports for a user, e.g. after removing them from an org. */
   setMemberships(userId: string, next: OrgMembership[]): void;
+  /** Grant WeldSuite via public_metadata.weldsuite. */
+  setWeldsuite(userId: string, included: boolean): void;
+  /** Override billing subscription for a user. */
+  setBilling(userId: string, billing: StubBilling): void;
   /** Make every Clerk call fail, to exercise the outage path. */
   breakClerk(): void;
 }
@@ -85,6 +98,8 @@ export interface ClerkStub {
 /** Serve canned Clerk responses for the duration of a test. */
 export function stubClerk(initial: Record<string, OrgMembership[]>): ClerkStub {
   const memberships = new Map(Object.entries(initial));
+  const weldsuite = new Map<string, boolean>();
+  const billing = new Map<string, StubBilling>();
   let broken = false;
 
   handler = (url) => {
@@ -97,24 +112,96 @@ export function stubClerk(initial: Record<string, OrgMembership[]>): ClerkStub {
       return Response.json({ data, total_count: data.length });
     }
 
+    const userBilling = url.match(/\/users\/([^/]+)\/billing\/subscription/);
+    if (userBilling) {
+      const userId = decodeURIComponent(userBilling[1]!);
+      const sub = billing.get(userId) ?? { kind: "none" as const };
+      if (sub.kind === "none") {
+        return new Response("No subscription", { status: 404 });
+      }
+      return Response.json({
+        object: "commerce_subscription",
+        id: `sub_${userId}`,
+        status: "active",
+        payer_id: `payer_${userId}`,
+        created_at: 0,
+        updated_at: 0,
+        active_at: 0,
+        past_due_at: null,
+        eligible_for_free_trial: false,
+        next_payment: null,
+        subscription_items: [
+          {
+            object: "commerce_subscription_item",
+            id: `subi_${userId}`,
+            status: sub.status ?? "active",
+            plan: {
+              object: "commerce_plan",
+              id: `plan_${sub.slug}`,
+              name: sub.slug,
+              slug: sub.slug,
+              description: null,
+              is_default: false,
+              has_base_fee: true,
+              publicly_visible: true,
+              features: (sub.features ?? []).map((slug) => ({
+                object: "feature",
+                id: `feat_${slug}`,
+                name: slug,
+                slug,
+                description: null,
+              })),
+            },
+          },
+        ],
+      });
+    }
+
     const user = url.match(/\/users\/([^/?]+)(?:\?|$)/);
     if (user) {
       const userId = decodeURIComponent(user[1]!);
       return Response.json({
+        object: "user",
         id: userId,
-        first_name: "Test",
-        last_name: "User",
-        username: null,
-        image_url: "https://img.clerk.test/avatar.png",
-        primary_email_address_id: "idn_1",
-        email_addresses: [
-          { id: "idn_1", email_address: `${userId}@weldspeak.test`, verification: null },
-        ],
-        public_metadata: {},
-        private_metadata: {},
-        unsafe_metadata: {},
+        password_enabled: true,
+        totp_enabled: false,
+        backup_code_enabled: false,
+        two_factor_enabled: false,
+        banned: false,
+        locked: false,
         created_at: 0,
         updated_at: 0,
+        image_url: "https://img.clerk.test/avatar.png",
+        has_image: true,
+        primary_email_address_id: "idn_1",
+        primary_phone_number_id: null,
+        primary_web3_wallet_id: null,
+        last_sign_in_at: null,
+        external_id: null,
+        username: null,
+        first_name: "Test",
+        last_name: "User",
+        public_metadata: weldsuite.get(userId) ? { weldsuite: true } : {},
+        private_metadata: {},
+        unsafe_metadata: {},
+        email_addresses: [
+          {
+            id: "idn_1",
+            email_address: `${userId}@weldspeak.test`,
+            verification: null,
+            linked_to: [],
+          },
+        ],
+        phone_numbers: [],
+        web3_wallets: [],
+        external_accounts: [],
+        saml_accounts: [],
+        last_active_at: null,
+        create_organization_enabled: true,
+        create_organizations_limit: null,
+        delete_self_enabled: true,
+        legal_accepted_at: null,
+        locale: null,
       });
     }
 
@@ -124,6 +211,12 @@ export function stubClerk(initial: Record<string, OrgMembership[]>): ClerkStub {
   return {
     setMemberships(userId, next) {
       memberships.set(userId, next);
+    },
+    setWeldsuite(userId, included) {
+      weldsuite.set(userId, included);
+    },
+    setBilling(userId, next) {
+      billing.set(userId, next);
     },
     breakClerk() {
       broken = true;

@@ -16,6 +16,7 @@ import { deviceRoutes } from "./auth/device.js";
 import { refreshRoutes } from "./auth/refresh.js";
 import { webhookRoutes } from "./auth/webhook.js";
 import { getUserProfile, listOrgMemberships } from "./auth/clerk.js";
+import { monthlyWordCap } from "./billing/entitlements.js";
 import { dictionaryRoutes } from "./routes/dictionary.js";
 import { transcriptRoutes } from "./routes/transcripts.js";
 import { orgRoutes } from "./routes/org.js";
@@ -36,7 +37,7 @@ app.route("/api/transcripts", transcriptRoutes);
 app.route("/api/org", orgRoutes);
 
 app.get("/api/me", requireAuth(), async (c) => {
-  const { userId, orgs: tokenOrgs, deviceId } = c.get("auth");
+  const { userId, orgs: tokenOrgs, deviceId, entitlement } = c.get("auth");
 
   const profile = await getUserProfile(c.env, userId);
 
@@ -46,7 +47,13 @@ app.get("/api/me", requireAuth(), async (c) => {
     ? tokenOrgs.map((org) => ({ orgId: org.id, name: org.id, slug: null, role: org.role }))
     : await listOrgMemberships(c.env, userId);
 
-  return c.json({ userId, ...profile, orgs } satisfies MeResponse);
+  return c.json({
+    userId,
+    ...profile,
+    orgs,
+    entitlement,
+    monthlyWordCap: monthlyWordCap(entitlement),
+  } satisfies MeResponse);
 });
 
 /**
@@ -82,7 +89,11 @@ app.get("/v1/stream", async (c) => {
     );
   }
 
-  const identity: SessionIdentity = { userId: claims.sub, orgId: requestedOrgId };
+  const identity: SessionIdentity = {
+    userId: claims.sub,
+    orgId: requestedOrgId,
+    entitlement: claims.entitlement ?? "free",
+  };
 
   // One DO per connection: a dictation is a single utterance with no state to
   // share, so a fresh ID avoids any cross-session interference.

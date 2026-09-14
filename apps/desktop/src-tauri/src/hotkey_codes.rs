@@ -360,6 +360,144 @@ fn macos_hid(code: &str) -> Option<u16> {
     })
 }
 
+/// KeyboardEvent `code` for a Windows virtual-key, used when capturing a
+/// binding in the native settings window.
+#[cfg(target_os = "windows")]
+pub fn code_from_windows_vk(vk: u16, extended: bool, scan: u16) -> Option<String> {
+    Some(
+        match vk {
+            0x11 => {
+                if extended {
+                    "ControlRight"
+                } else {
+                    "ControlLeft"
+                }
+            }
+            0x12 => {
+                if extended {
+                    "AltRight"
+                } else {
+                    "AltLeft"
+                }
+            }
+            0x10 => {
+                if scan == 0x36 {
+                    "ShiftRight"
+                } else {
+                    "ShiftLeft"
+                }
+            }
+            0x5B => "MetaLeft",
+            0x5C => "MetaRight",
+            0x20 => "Space",
+            0x09 => "Tab",
+            0x0D => "Enter",
+            0x08 => "Backspace",
+            0x2E => "Delete",
+            0x1B => "Escape",
+            0x25 => "ArrowLeft",
+            0x26 => "ArrowUp",
+            0x27 => "ArrowRight",
+            0x28 => "ArrowDown",
+            0x70..=0x87 => {
+                return Some(format!("F{}", vk - 0x6F));
+            }
+            other if (0x41..=0x5A).contains(&other) => {
+                return Some(format!("Key{}", char::from(other as u8)));
+            }
+            other if (0x30..=0x39).contains(&other) => {
+                return Some(format!("Digit{}", char::from(other as u8)));
+            }
+            0xA2 => "ControlLeft",
+            0xA3 => "ControlRight",
+            0xA4 => "AltLeft",
+            0xA5 => "AltRight",
+            0xA0 => "ShiftLeft",
+            0xA1 => "ShiftRight",
+            _ => return None,
+        }
+        .into(),
+    )
+}
+
+/// KeyboardEvent `code` for a macOS HID keycode.
+#[cfg(target_os = "macos")]
+pub fn code_from_macos_hid(hid: u16) -> Option<String> {
+    Some(
+        match hid {
+            0 => "KeyA",
+            1 => "KeyS",
+            2 => "KeyD",
+            3 => "KeyF",
+            4 => "KeyH",
+            5 => "KeyG",
+            6 => "KeyZ",
+            7 => "KeyX",
+            8 => "KeyC",
+            9 => "KeyV",
+            11 => "KeyB",
+            12 => "KeyQ",
+            13 => "KeyW",
+            14 => "KeyE",
+            15 => "KeyR",
+            16 => "KeyY",
+            17 => "KeyT",
+            18 => "Digit1",
+            19 => "Digit2",
+            20 => "Digit3",
+            21 => "Digit4",
+            22 => "Digit6",
+            23 => "Digit5",
+            24 => "Equal",
+            25 => "Digit9",
+            26 => "Digit7",
+            27 => "Minus",
+            28 => "Digit8",
+            29 => "Digit0",
+            31 => "KeyO",
+            32 => "KeyU",
+            34 => "KeyI",
+            35 => "KeyP",
+            36 => "Enter",
+            37 => "KeyL",
+            38 => "KeyJ",
+            40 => "KeyK",
+            45 => "KeyN",
+            46 => "KeyM",
+            48 => "Tab",
+            49 => "Space",
+            51 => "Backspace",
+            53 => "Escape",
+            54 => "MetaRight",
+            55 => "MetaLeft",
+            56 => "ShiftLeft",
+            58 => "AltLeft",
+            59 => "ControlLeft",
+            60 => "ShiftRight",
+            61 => "AltRight",
+            62 => "ControlRight",
+            122 => "F1",
+            120 => "F2",
+            99 => "F3",
+            118 => "F4",
+            96 => "F5",
+            97 => "F6",
+            98 => "F7",
+            100 => "F8",
+            101 => "F9",
+            109 => "F10",
+            103 => "F11",
+            111 => "F12",
+            123 => "ArrowLeft",
+            124 => "ArrowRight",
+            125 => "ArrowDown",
+            126 => "ArrowUp",
+            _ => return None,
+        }
+        .into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

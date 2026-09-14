@@ -61,10 +61,7 @@ async fn check_and_install(app: &AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
 
-    overlay::show_status(
-        app,
-        &format!("Updating WeldSpeak to {}…", update.version),
-    );
+    overlay::show_status(app, &format!("Updating WeldSpeak to {}…", update.version));
 
     update
         .download_and_install(|_chunk, _total| {}, || {})

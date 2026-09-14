@@ -59,11 +59,7 @@ pub enum Outcome {
 /// on a managed machine, and the right response is a usable fallback plus an
 /// explanation, not a failure the user cannot act on.
 pub fn deliver(text: &str, preference: Preference) -> Result<Outcome> {
-    match weldspeak_core::inject::plan_or_clipboard_only(
-        text,
-        preference,
-        can_synthesise_input(),
-    ) {
+    match weldspeak_core::inject::plan_or_clipboard_only(text, preference, can_synthesise_input()) {
         Fallback::Inject(plan) => {
             execute(&plan)?;
             Ok(Outcome::Injected)
@@ -96,7 +92,9 @@ fn paste(text: &str, preserve_clipboard: bool) -> Result<()> {
         // Non-text clipboard contents (an image, a file) cannot be round-tripped
         // through a string, so they are lost. Failing the whole dictation over
         // it would be worse.
-        arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok())
+        arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut c| c.get_text().ok())
     } else {
         None
     };

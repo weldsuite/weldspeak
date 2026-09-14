@@ -22,7 +22,7 @@ pub fn expand(text: &str, snippets: &[Snippet]) -> String {
         .iter()
         .filter(|snippet| !snippet.trigger.trim().is_empty())
         .collect();
-    ordered.sort_by(|a, b| b.trigger.trim().len().cmp(&a.trigger.trim().len()));
+    ordered.sort_by_key(|a| std::cmp::Reverse(a.trigger.trim().len()));
 
     let mut output = text.to_string();
     for snippet in ordered {
@@ -43,7 +43,10 @@ fn replace_phrase(haystack: &str, trigger: &str, expansion: &str) -> String {
         let after_start = found + needle.len();
         let left_ok = found == 0 || !rest.as_bytes()[found - 1].is_ascii_alphanumeric();
         let right_ok = after_start == rest.len()
-            || !rest.as_bytes().get(after_start).is_some_and(|b| b.is_ascii_alphanumeric());
+            || !rest
+                .as_bytes()
+                .get(after_start)
+                .is_some_and(|b| b.is_ascii_alphanumeric());
         if left_ok && right_ok {
             result.push_str(before);
             result.push_str(expansion);

@@ -22,7 +22,7 @@ import type { Env } from "../src/env.js";
 /** An Env carrying only what cleanup touches, with a scripted model. */
 function envWith(run: (model: string, input: unknown) => Promise<unknown>): Env {
   return {
-    CLEANUP_MODEL: "@cf/zai-org/glm-4.7-flash",
+    CLEANUP_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
     AI: { run: (model: string, input: unknown) => run(model, input) },
   } as unknown as Env;
 }
@@ -143,7 +143,7 @@ describe("cleanup", () => {
 
     await cleanupTranscript(env, "hello", []);
 
-    expect(seenModel).toBe("@cf/zai-org/glm-4.7-flash");
+    expect(seenModel).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
     // Cleanup is a rewrite, not a creative task; near-greedy decoding stops the
     // model paraphrasing what it was told to preserve.
     expect(seenInput.temperature).toBeLessThanOrEqual(0.2);

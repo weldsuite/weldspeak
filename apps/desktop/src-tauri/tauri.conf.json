@@ -4,48 +4,13 @@
   "version": "0.1.0",
   "identifier": "io.weldspeak.desktop",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm --filter @weldspeak/desktop-ui dev",
-    "beforeBuildCommand": "pnpm --filter @weldspeak/desktop-ui build"
+    "frontendDist": "ui-stub"
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": [
-      {
-        "label": "settings",
-        "title": "WeldSpeak",
-        "width": 400,
-        "height": 640,
-        "minWidth": 360,
-        "minHeight": 520,
-        "resizable": true,
-        "visible": true
-      },
-      {
-        "label": "overlay",
-        "url": "index.html",
-        "width": 72,
-        "height": 34,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "shadow": false,
-        "resizable": false,
-        "focus": false,
-        "visible": false,
-        "backgroundColor": { "red": 0, "green": 0, "blue": 0, "alpha": 0 }
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
-    },
-    "trayIcon": {
-      "id": "main",
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "WeldSpeak"
+      "csp": null
     }
   },
   "bundle": {

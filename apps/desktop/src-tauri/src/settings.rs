@@ -4,12 +4,12 @@
 //! it works has already failed; these are the choices people genuinely differ
 //! on, and everything else has a defensible default.
 
+use crate::hotkey::Binding;
+use crate::snippets::Snippet;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use weldspeak_core::inject::Preference;
-use crate::hotkey::Binding;
-use crate::snippets::Snippet;
 
 /// Where the API lives. Overridable for local development.
 pub const DEFAULT_API_BASE: &str = "https://weldspeak.weldsuite.org";
@@ -200,7 +200,8 @@ mod tests {
     fn replaces_an_unholdable_hotkey() {
         // An older shortcut-plugin chord would leave the watcher with nothing
         // to listen for, so hold-to-talk appeared dead.
-        let dir = std::env::temp_dir().join(format!("weldspeak-settings-hk-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-hk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         std::fs::write(
@@ -238,7 +239,8 @@ mod tests {
 
     #[test]
     fn round_trips_through_a_file() {
-        let dir = std::env::temp_dir().join(format!("weldspeak-settings-rt-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
 
@@ -284,7 +286,13 @@ mod tests {
 
     #[test]
     fn maps_onto_the_core_preference() {
-        assert_eq!(Preference::from(InjectionPreference::AlwaysType), Preference::AlwaysType);
-        assert_eq!(Preference::from(InjectionPreference::Automatic), Preference::Automatic);
+        assert_eq!(
+            Preference::from(InjectionPreference::AlwaysType),
+            Preference::AlwaysType
+        );
+        assert_eq!(
+            Preference::from(InjectionPreference::Automatic),
+            Preference::Automatic
+        );
     }
 }

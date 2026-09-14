@@ -1,25 +1,26 @@
-//! The on-screen listening pill.
+//! Native listening pill — no webview.
 //!
-//! Wispr-style feedback: the moment the dictation key goes down, a floating
-//! bar appears above the taskbar and shows that the microphone is live. It
-//! never takes focus — the caret stays in whatever the user was typing into.
+//! A small rounded window above the taskbar. Click-through, never focused.
+//! Bars follow the microphone; notices can widen the capsule.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::window::Color;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, WebviewWindow};
-
-/// Waveform-only capsule. It does not grow with speech; notices may widen.
-const COMPACT_SIZE: LogicalSize<f64> = LogicalSize {
-    width: 72.0,
-    height: 34.0,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition};
 
 use crate::audio::Capture;
 use crate::AppState;
 
-fn window(app: &AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window("overlay")
+const COMPACT_W: i32 = 72;
+const COMPACT_H: i32 = 34;
+
+/// 0 idle (hidden), 1 listening, 2 thinking, 3 notice.
+static PHASE: AtomicU8 = AtomicU8::new(0);
+static NOTICE: OnceLock<Mutex<String>> = OnceLock::new();
+static APP: OnceLock<AppHandle> = OnceLock::new();
+
+fn notice_lock() -> &'static Mutex<String> {
+    NOTICE.get_or_init(|| Mutex::new(String::new()))
 }
 
 fn set_live(app: &AppHandle, live: bool) {
@@ -28,94 +29,68 @@ fn set_live(app: &AppHandle, live: bool) {
         .store(live, Ordering::Relaxed);
 }
 
-fn reveal(app: &AppHandle, window: &WebviewWindow, size: LogicalSize<f64>) {
-    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
-    let _ = window.set_size(Size::Logical(size));
-    position_over_cursor(app, window, size);
-    let _ = window.set_ignore_cursor_events(true);
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-}
-
-fn notice_size(message: &str) -> LogicalSize<f64> {
+fn notice_size(message: &str) -> (i32, i32) {
     if message.is_empty() {
-        return COMPACT_SIZE;
+        return (COMPACT_W, COMPACT_H);
     }
-    let width = (92.0 + message.len() as f64 * 6.8).clamp(132.0, 320.0);
-    LogicalSize {
-        width,
-        height: 34.0,
-    }
+    let width = (92.0 + message.len() as f64 * 6.8).clamp(132.0, 320.0) as i32;
+    (width, COMPACT_H)
 }
 
-/// Place the pill on the monitor under the cursor, above the taskbar, and make
-/// it click-through so it cannot steal the user's typing.
 pub fn prepare(app: &AppHandle) -> tauri::Result<()> {
-    let Some(window) = window(app) else {
-        return Ok(());
-    };
-
-    let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
-    let _ = window.set_ignore_cursor_events(true);
-    let _ = window.set_size(Size::Logical(COMPACT_SIZE));
-    position_over_cursor(app, &window, COMPACT_SIZE);
+    let _ = APP.set(app.clone());
+    platform::create(app)?;
     spawn_level_ticker(app.clone());
     Ok(())
 }
 
-/// Key is down: the user should see that they are talking, immediately.
 pub fn appear_listening(app: &AppHandle) {
     set_live(app, true);
-    if let Some(window) = window(app) {
-        reveal(app, &window, COMPACT_SIZE);
-    }
-    let _ = app.emit("weldspeak://listening", ());
+    PHASE.store(1, Ordering::Relaxed);
+    platform::show(app, COMPACT_W, COMPACT_H);
+}
+
+pub fn appear_thinking(app: &AppHandle) {
+    set_live(app, false);
+    PHASE.store(2, Ordering::Relaxed);
+    platform::show(app, COMPACT_W, COMPACT_H);
 }
 
 pub fn show_notice(app: &AppHandle, message: &str) {
     set_live(app, false);
-    if let Some(window) = window(app) {
-        reveal(app, &window, notice_size(message));
+    if let Ok(mut guard) = notice_lock().lock() {
+        *guard = message.to_string();
     }
-    let _ = app.emit("weldspeak://notice", message);
+    PHASE.store(3, Ordering::Relaxed);
+    let (w, h) = notice_size(message);
+    platform::show(app, w, h);
     hide_later(app, Duration::from_secs(4));
 }
 
-/// Same as [`show_notice`], but the pill stays until the caller hides it.
-/// Used while an update is downloading so a 4-second flash is not the last
-/// thing the user sees of the process.
 pub fn show_status(app: &AppHandle, message: &str) {
     set_live(app, false);
-    if let Some(window) = window(app) {
-        reveal(app, &window, notice_size(message));
+    if let Ok(mut guard) = notice_lock().lock() {
+        *guard = message.to_string();
     }
-    let _ = app.emit("weldspeak://notice", message);
+    PHASE.store(3, Ordering::Relaxed);
+    let (w, h) = notice_size(message);
+    platform::show(app, w, h);
+}
+
+pub fn dismiss(app: &AppHandle) {
+    set_live(app, false);
+    PHASE.store(0, Ordering::Relaxed);
+    platform::hide();
 }
 
 fn hide_later(app: &AppHandle, after: Duration) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(after).await;
-        if !app
-            .state::<AppState>()
-            .overlay_live
-            .load(Ordering::Relaxed)
-        {
-            hide(&app);
+        if !app.state::<AppState>().overlay_live.load(Ordering::Relaxed) {
+            dismiss(&app);
         }
     });
-}
-
-pub fn dismiss(app: &AppHandle) {
-    set_live(app, false);
-    let _ = app.emit("weldspeak://done", ());
-    hide(app);
-}
-
-fn hide(app: &AppHandle) {
-    if let Some(window) = window(app) {
-        let _ = window.hide();
-    }
 }
 
 fn spawn_level_ticker(app: AppHandle) {
@@ -127,36 +102,53 @@ fn spawn_level_ticker(app: AppHandle) {
             if !state.overlay_live.load(Ordering::Relaxed) {
                 continue;
             }
-            let level = state
-                .capture
-                .lock()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(Capture::current_level))
-                .unwrap_or(0.0);
-            let _ = app.emit("weldspeak://level", level);
+            platform::repaint();
         }
     });
 }
 
-fn position_over_cursor(app: &AppHandle, window: &WebviewWindow, logical: LogicalSize<f64>) {
-    let monitor = app
-        .cursor_position()
+fn current_level(app: &AppHandle) -> f32 {
+    app.state::<AppState>()
+        .capture
+        .lock()
         .ok()
-        .and_then(|point| window.monitor_from_point(point.x, point.y).ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten());
+        .and_then(|guard| guard.as_ref().map(Capture::current_level))
+        .unwrap_or(0.0)
+}
 
-    let Some(monitor) = monitor else {
-        return;
-    };
+fn position_over_cursor(app: &AppHandle, width: i32, height: i32) -> Option<(i32, i32)> {
+    #[allow(unused_variables)]
+    let _ = (app, width, height);
+    platform::cursor_monitor_rect(app).map(|(x, y, w, h)| {
+        let px = x + (w - width) / 2;
+        let py = y + h - height - 56;
+        (px, py)
+    })
+}
 
-    // Use the size we just asked for. `outer_size` lags a frame behind `set_size`,
-    // which would leave a growing notice off-centre.
-    let scale = monitor.scale_factor();
-    let width = (logical.width * scale).round() as i32;
-    let height = (logical.height * scale).round() as i32;
-    let origin = monitor.position();
-    let area = monitor.size();
-    let x = origin.x + (area.width as i32 - width) / 2;
-    let y = origin.y + area.height as i32 - height - 56;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+#[allow(dead_code)]
+fn physical_position(x: i32, y: i32) -> PhysicalPosition<i32> {
+    PhysicalPosition::new(x, y)
+}
+
+#[cfg(target_os = "windows")]
+#[path = "overlay_windows.rs"]
+mod platform;
+
+#[cfg(target_os = "macos")]
+#[path = "overlay_macos.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod platform {
+    use tauri::AppHandle;
+    pub fn create(_app: &AppHandle) -> tauri::Result<()> {
+        Ok(())
+    }
+    pub fn show(_app: &AppHandle, _w: i32, _h: i32) {}
+    pub fn hide() {}
+    pub fn repaint() {}
+    pub fn cursor_monitor_rect(_app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
 }

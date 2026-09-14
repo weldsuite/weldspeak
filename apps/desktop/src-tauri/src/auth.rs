@@ -72,8 +72,14 @@ pub async fn start_device_flow(api_base: &str) -> Result<DeviceStart> {
     let response = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()?
-        .post(format!("{}/auth/device/start", api_base.trim_end_matches('/')))
-        .json(&DeviceStartRequest { platform: platform_name().into(), label })
+        .post(format!(
+            "{}/auth/device/start",
+            api_base.trim_end_matches('/')
+        ))
+        .json(&DeviceStartRequest {
+            platform: platform_name().into(),
+            label,
+        })
         .send()
         .await?
         .error_for_status()?;

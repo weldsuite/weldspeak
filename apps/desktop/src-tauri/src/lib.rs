@@ -2,6 +2,8 @@
 //!
 //! A tray application with no window of its own most of the time: hold the
 //! hotkey, speak, release, and the text appears wherever you were typing.
+//! Open WeldSpeak from the tray for the native Hub (history, dictionary,
+//! snippets, settings).
 //!
 //! The portable logic — audio conditioning, the session state machine,
 //! injection policy, token lifetime — lives in `weldspeak-core`, where it is
@@ -18,6 +20,7 @@ pub mod hotkey;
 pub mod inject;
 pub mod learn;
 pub mod media;
+pub mod native_settings;
 pub mod overlay;
 pub mod settings;
 pub mod snippets;
@@ -211,7 +214,6 @@ pub fn run() {
         });
 }
 
-
 /// Restore credentials saved by a previous run.
 ///
 /// Only the refresh token is persisted; the access token is short-lived and
@@ -249,6 +251,7 @@ fn restore_session(app: &AppHandle) {
                 // the sign-in panel without this — same event as begin_sign_in.
                 use tauri::Emitter;
                 let _ = app.emit("weldspeak://signed-in", ());
+                crate::native_settings::on_signed_in();
 
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
@@ -273,14 +276,21 @@ fn restore_session(app: &AppHandle) {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let paste_item = MenuItem::with_id(app, "paste-last", "Paste last dictation", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Open WeldSpeak", true, None::<&str>)?;
+    let paste_item = MenuItem::with_id(
+        app,
+        "paste-last",
+        "Paste last dictation",
+        true,
+        None::<&str>,
+    )?;
     let copy_item = MenuItem::with_id(app, "copy-last", "Copy last dictation", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit WeldSpeak", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&settings_item, &paste_item, &copy_item, &quit_item])?;
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("WeldSpeak")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -316,10 +326,7 @@ fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 fn show_settings(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    native_settings::show(app);
 }
 
 /// Point capture at the microphone currently in settings.
@@ -346,12 +353,7 @@ pub(crate) fn reopen_microphone(app: &AppHandle) {
         .lock()
         .ok()
         .and_then(|settings| settings.microphone.clone());
-    let Some(frames) = state
-        .frames
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-    else {
+    let Some(frames) = state.frames.lock().ok().and_then(|guard| guard.clone()) else {
         return;
     };
 

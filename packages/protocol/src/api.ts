@@ -76,6 +76,10 @@ export interface MeResponse {
   imageUrl: string | null;
   /** Every org the caller belongs to, so the client can offer a switcher. */
   orgs: OrgMembership[];
+  /** Billing: free (2,000 words/mo), paid, or WeldSuite-included. */
+  entitlement: "free" | "paid" | "weldsuite";
+  /** Null when uncapped (paid / WeldSuite). */
+  monthlyWordCap: number | null;
 }
 
 // --- Dictionary ------------------------------------------------------------
@@ -140,8 +144,16 @@ export interface UsageSummary {
   periodStart: string;
   audioSeconds: number;
   monthlyMinuteCap: number | null;
+  /**
+   * Words dictated by the caller this calendar month (UTC), across orgs.
+   * This is what the free-tier 2,000-word cap meters.
+   */
+  wordCount: number;
+  /** 2000 for free; null when uncapped. */
+  monthlyWordCap: number | null;
+  entitlement: "free" | "paid" | "weldsuite";
   /** Per-member breakdown. Admin-only; empty for non-admins. */
-  byUser: Array<{ userId: string; audioSeconds: number }>;
+  byUser: Array<{ userId: string; audioSeconds: number; wordCount: number }>;
 }
 
 export interface ApiError {

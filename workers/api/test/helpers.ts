@@ -9,6 +9,7 @@
 
 import { env } from "cloudflare:test";
 import { mintAccessToken } from "../src/auth/tokens.js";
+import type { Entitlement } from "../src/billing/entitlements.js";
 import type { OrgMembership } from "@weldspeak/protocol";
 import worker from "../src/index.js";
 
@@ -34,8 +35,9 @@ export async function tokenFor(
   userId: string,
   orgs: OrgMembership[],
   deviceId = "device_test",
+  entitlement: Entitlement = "free",
 ): Promise<string> {
-  const { token } = await mintAccessToken(env as never, userId, deviceId, orgs);
+  const { token } = await mintAccessToken(env as never, userId, deviceId, orgs, entitlement);
   return token;
 }
 
