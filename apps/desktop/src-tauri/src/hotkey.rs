@@ -203,19 +203,28 @@ pub fn listen_for(accelerator: &str) {
 }
 
 fn pack(first: u16, second: u16) -> u32 {
-    u32::from(first) | (u32::from(second) << 16)
+    // Encode codes as `n + 1` so a stored `0` still means "no binding".
+    // macOS HID usage for KeyA is 0; without the offset a KeyA hold would look
+    // unbound and `binding_down` would never fire.
+    let first = u32::from(first).saturating_add(1);
+    let second = if second == 0 {
+        0
+    } else {
+        u32::from(second).saturating_add(1)
+    };
+    first | (second << 16)
 }
 
 fn binding_down(packed: u32) -> bool {
-    let first = packed as u16;
-    let second = (packed >> 16) as u16;
-    if first == 0 {
+    if packed == 0 {
         return false;
     }
+    let first = (packed as u16).wrapping_sub(1);
+    let second_bits = (packed >> 16) as u16;
     if !platform::is_down(first) {
         return false;
     }
-    second == 0 || platform::is_down(second)
+    second_bits == 0 || platform::is_down(second_bits.wrapping_sub(1))
 }
 
 /// Ignore the hold key while Settings is capturing a replacement.

@@ -20,6 +20,9 @@ pub fn parse_codes(accelerator: &str) -> Option<(u16, u16)> {
         return None;
     }
     let first = native_code(parts[0])?;
+    // Windows virtual-key 0 is never a real key. macOS HID usage 0 is KeyA,
+    // so only reject zero on Windows.
+    #[cfg(target_os = "windows")]
     if first == 0 {
         return None;
     }
@@ -27,7 +30,11 @@ pub fn parse_codes(accelerator: &str) -> Option<(u16, u16)> {
         return Some((first, 0));
     }
     let second = native_code(parts[1])?;
-    if second == 0 || second == first {
+    #[cfg(target_os = "windows")]
+    if second == 0 {
+        return None;
+    }
+    if second == first {
         return None;
     }
     Some((first, second))
