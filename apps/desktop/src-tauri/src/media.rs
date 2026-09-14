@@ -13,6 +13,9 @@ use crate::AppState;
 #[derive(Default)]
 pub struct MediaPause {
     paused_apps: Vec<String>,
+    /// Windows WASAPI sessions muted for the duration of a dictation.
+    /// Unused on macOS, where only AppleScript pause/play is available.
+    #[allow(dead_code)]
     muted_pids: Vec<u32>,
 }
 
