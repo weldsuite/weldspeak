@@ -132,12 +132,13 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
         brand.setStringValue(&NSString::from_str("WeldSpeak"));
         brand.setFont(Some(&NSFont::boldSystemFontOfSize(16.0)));
         let (tr, tg, tb) = theme::SIDEBAR_TEXT_RGB;
-        brand.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+        let brand_fg = NSColor::colorWithCalibratedRed_green_blue_alpha(
             tr as f64 / 255.0,
             tg as f64 / 255.0,
             tb as f64 / 255.0,
             1.0,
-        )));
+        );
+        brand.setTextColor(Some(&brand_fg));
         brand.setFrame(NSRect::new(
             NSPoint::new(18.0, (WINDOW_HEIGHT as f64) - 52.0),
             NSSize::new((SIDEBAR_WIDTH - 28) as f64, 28.0),
@@ -177,10 +178,7 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
     unsafe {
         content.setFrame(NSRect::new(
             NSPoint::new(SIDEBAR_WIDTH as f64, 0.0),
-            NSSize::new(
-                (WINDOW_WIDTH - SIDEBAR_WIDTH) as f64,
-                WINDOW_HEIGHT as f64,
-            ),
+            NSSize::new((WINDOW_WIDTH - SIDEBAR_WIDTH) as f64, WINDOW_HEIGHT as f64),
         ));
         root.addSubview(&content);
     }
@@ -229,27 +227,18 @@ fn update_nav_titles() {
             let p = Page::from_index(i);
             unsafe {
                 button.setTitle(&NSString::from_str(p.label()));
-                if p == page {
-                    let (r, g, b) = theme::BRAND_RGB;
-                    button.setContentTintColor(Some(
-                        &NSColor::colorWithCalibratedRed_green_blue_alpha(
-                            r as f64 / 255.0,
-                            g as f64 / 255.0,
-                            b as f64 / 255.0,
-                            1.0,
-                        ),
-                    ));
+                let (r, g, b) = if p == page {
+                    theme::BRAND_RGB
                 } else {
-                    let (r, g, b) = theme::SIDEBAR_TEXT_RGB;
-                    button.setContentTintColor(Some(
-                        &NSColor::colorWithCalibratedRed_green_blue_alpha(
-                            r as f64 / 255.0,
-                            g as f64 / 255.0,
-                            b as f64 / 255.0,
-                            1.0,
-                        ),
-                    ));
-                }
+                    theme::SIDEBAR_TEXT_RGB
+                };
+                let tint = NSColor::colorWithCalibratedRed_green_blue_alpha(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    1.0,
+                );
+                button.setContentTintColor(Some(&tint));
             }
         }
     });
@@ -273,7 +262,14 @@ fn add_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f64, h: 
     }
 }
 
-fn add_button(parent: &NSView, title: &str, x: f64, y: f64, w: f64, action: Sel) -> Retained<NSButton> {
+fn add_button(
+    parent: &NSView,
+    title: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    action: Sel,
+) -> Retained<NSButton> {
     let button = unsafe { NSButton::new(mtm()) };
     unsafe {
         button.setTitle(&NSString::from_str(title));
@@ -305,7 +301,14 @@ fn add_checkbox(parent: &NSView, title: &str, x: f64, y: f64, w: f64, on: bool, 
     }
 }
 
-fn add_field(parent: &NSView, placeholder: &str, x: f64, y: f64, w: f64, tag: isize) -> Retained<NSTextField> {
+fn add_field(
+    parent: &NSView,
+    placeholder: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    tag: isize,
+) -> Retained<NSTextField> {
     let field = unsafe { NSTextField::new(mtm()) };
     unsafe {
         field.setEditable(true);
@@ -318,7 +321,15 @@ fn add_field(parent: &NSView, placeholder: &str, x: f64, y: f64, w: f64, tag: is
     field
 }
 
-fn add_popup(parent: &NSView, items: &[&str], selected: usize, x: f64, y: f64, w: f64, action: Sel) {
+fn add_popup(
+    parent: &NSView,
+    items: &[&str],
+    selected: usize,
+    x: f64,
+    y: f64,
+    w: f64,
+    action: Sel,
+) {
     let popup = unsafe { NSPopUpButton::new(mtm()) };
     unsafe {
         popup.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 28.0)));
@@ -365,7 +376,15 @@ fn build_home() {
         24.0,
     );
     if signed_in {
-        add_label(&content, "Recent dictations", 13.0, 24.0, h - 68.0, 700.0, 20.0);
+        add_label(
+            &content,
+            "Recent dictations",
+            13.0,
+            24.0,
+            h - 68.0,
+            700.0,
+            20.0,
+        );
     } else {
         add_label(
             &content,
@@ -379,7 +398,11 @@ fn build_home() {
         add_button(&content, "Sign in", 24.0, h - 104.0, 110.0, sel!(signIn:));
     }
 
-    let rows = TRANSCRIPTS.lock().ok().map(|r| r.clone()).unwrap_or_default();
+    let rows = TRANSCRIPTS
+        .lock()
+        .ok()
+        .map(|r| r.clone())
+        .unwrap_or_default();
     let mut y = h - if signed_in { 100.0 } else { 140.0 };
     for (i, row) in rows.iter().take(12).enumerate() {
         let line = format!(
@@ -468,10 +491,21 @@ fn build_dictionary() {
         22.0,
     );
     add_field(&content, "Word or phrase", 24.0, h - 80.0, 200.0, 401);
-    add_field(&content, "Sounds like (optional)", 236.0, h - 80.0, 200.0, 402);
+    add_field(
+        &content,
+        "Sounds like (optional)",
+        236.0,
+        h - 80.0,
+        200.0,
+        402,
+    );
     add_button(&content, "Add", 448.0, h - 82.0, 80.0, sel!(addDict:));
 
-    let rows = DICTIONARY.lock().ok().map(|r| r.clone()).unwrap_or_default();
+    let rows = DICTIONARY
+        .lock()
+        .ok()
+        .map(|r| r.clone())
+        .unwrap_or_default();
     let mut y = h - 120.0;
     for (i, row) in rows.iter().take(14).enumerate() {
         let sound = row.sounds_like.as_deref().unwrap_or("");
@@ -986,7 +1020,10 @@ unsafe extern "C" fn bind_key(_this: &NSObject, _cmd: Sel, _sender: Option<&AnyO
         if let Some(code) = found {
             match native_settings::set_hotkey(&app, code.clone()) {
                 Ok(()) => {
-                    crate::overlay::show_notice(&app, &format!("Hold {}", crate::hotkey::label(&code)));
+                    crate::overlay::show_notice(
+                        &app,
+                        &format!("Hold {}", crate::hotkey::label(&code)),
+                    );
                     dispatch_rebuild();
                 }
                 Err(err) => crate::overlay::show_notice(&app, &err),
@@ -1175,7 +1212,10 @@ unsafe extern "C" fn paste_del<const I: usize>(
     if let Some(id) = id {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if crate::commands::delete_transcript(app.clone(), id).await.is_ok() {
+            if crate::commands::delete_transcript(app.clone(), id)
+                .await
+                .is_ok()
+            {
                 load_async_data(&app);
             }
         });

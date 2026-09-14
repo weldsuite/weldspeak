@@ -13,8 +13,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVS_REPORT, LVS_SHOWSELALWAYS,
-    LVS_SINGLESEL, WC_LISTVIEWW,
+    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVS_REPORT,
+    LVS_SHOWSELALWAYS, LVS_SINGLESEL, WC_LISTVIEWW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -130,16 +130,14 @@ static CONTENT_BRUSH: OnceLock<isize> = OnceLock::new();
 static SIDEBAR_BRUSH: OnceLock<isize> = OnceLock::new();
 
 fn content_brush() -> HBRUSH {
-    let bits = *CONTENT_BRUSH.get_or_init(|| unsafe {
-        CreateSolidBrush(rgb(theme::CONTENT_BG_RGB)).0 as isize
-    });
+    let bits = *CONTENT_BRUSH
+        .get_or_init(|| unsafe { CreateSolidBrush(rgb(theme::CONTENT_BG_RGB)).0 as isize });
     HBRUSH(bits as *mut c_void)
 }
 
 fn sidebar_brush() -> HBRUSH {
-    let bits = *SIDEBAR_BRUSH.get_or_init(|| unsafe {
-        CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB)).0 as isize
-    });
+    let bits = *SIDEBAR_BRUSH
+        .get_or_init(|| unsafe { CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB)).0 as isize });
     HBRUSH(bits as *mut c_void)
 }
 
@@ -788,7 +786,12 @@ fn create_listview(parent: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWN
         WC_LISTVIEWW,
         w!(""),
         WINDOW_STYLE(
-            WS_TABSTOP.0 | WS_BORDER.0 | WS_VISIBLE.0 | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            WS_TABSTOP.0
+                | WS_BORDER.0
+                | WS_VISIBLE.0
+                | LVS_REPORT
+                | LVS_SINGLESEL
+                | LVS_SHOWSELALWAYS,
         ),
         x,
         y,
@@ -892,8 +895,13 @@ fn insert_row(list: HWND, index: i32, cols: &[&str]) {
 
 fn selected_index(list: HWND) -> Option<usize> {
     let idx = unsafe {
-        SendMessageW(list, LVM_GETNEXTITEM, WPARAM((-1i32) as usize), LPARAM(LVNI_SELECTED as isize))
-            .0
+        SendMessageW(
+            list,
+            LVM_GETNEXTITEM,
+            WPARAM((-1i32) as usize),
+            LPARAM(LVNI_SELECTED as isize),
+        )
+        .0
     };
     if idx < 0 {
         None
@@ -1221,12 +1229,8 @@ fn apply_dictionary(parent: HWND, app: &AppHandle) {
         let mut i = 0i32;
         for row in rows.iter() {
             if !filter.is_empty() {
-                let hay = format!(
-                    "{} {}",
-                    row.term,
-                    row.sounds_like.as_deref().unwrap_or("")
-                )
-                .to_lowercase();
+                let hay = format!("{} {}", row.term, row.sounds_like.as_deref().unwrap_or(""))
+                    .to_lowercase();
                 if !hay.contains(&filter) {
                     continue;
                 }
@@ -1293,7 +1297,10 @@ fn apply_settings(parent: HWND, app: &AppHandle) {
         status.as_ref().map(|s| s.orgs.as_slice()).unwrap_or(&[]),
         settings.org_id.as_deref(),
     );
-    set_text(find_child(parent, ID_FOOTER), &native_settings::version_footer(app));
+    set_text(
+        find_child(parent, ID_FOOTER),
+        &native_settings::version_footer(app),
+    );
 }
 
 fn check(hwnd: HWND, on: bool) {
@@ -1406,9 +1413,7 @@ fn wide_str(text: &str) -> Vec<u16> {
 fn edit_text(parent: HWND, id: i32) -> String {
     let hwnd = find_child(parent, id);
     let mut buf = vec![0u16; 4096];
-    let len = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf)
-    };
+    let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut buf) };
     if len <= 0 {
         return String::new();
     }
@@ -1577,7 +1582,10 @@ fn on_command(window: HWND, id: i32, notify: u32) {
             tauri::async_runtime::spawn(async move {
                 match crate::commands::begin_sign_in(app.clone()).await {
                     Ok(started) => {
-                        crate::overlay::show_status(&app, &format!("Confirm {}", started.user_code));
+                        crate::overlay::show_status(
+                            &app,
+                            &format!("Confirm {}", started.user_code),
+                        );
                     }
                     Err(error) => crate::overlay::show_notice(&app, &error),
                 }
@@ -1607,7 +1615,10 @@ fn on_command(window: HWND, id: i32, notify: u32) {
                 if let Some(id) = id {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if crate::commands::delete_transcript(app.clone(), id).await.is_ok() {
+                        if crate::commands::delete_transcript(app.clone(), id)
+                            .await
+                            .is_ok()
+                        {
                             load_async_data(&app);
                         }
                     });

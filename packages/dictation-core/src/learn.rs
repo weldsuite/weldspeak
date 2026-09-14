@@ -31,16 +31,15 @@ const MAX_WORDS: usize = 80;
 
 /// Words that are never worth putting in a personal glossary by themselves.
 const COMMON: &[&str] = &[
-    "the", "and", "for", "with", "this", "that", "from", "have", "will", "would",
-    "should", "please", "thanks", "thank", "hello", "there", "here", "they",
-    "them", "then", "than", "when", "what", "which", "where", "your", "you",
-    "about", "after", "before", "because", "could", "just", "like", "some",
-    "more", "also", "into", "over", "under", "again", "other", "these", "those",
-    "been", "being", "were", "was", "are", "not", "but", "had", "has", "its",
-    "our", "out", "all", "any", "can", "did", "get", "got", "let", "may", "see",
-    "use", "way", "who", "how", "why", "yes", "yeah", "okay", "ok", "well",
-    "really", "very", "much", "make", "made", "need", "want", "look", "looks",
-    "good", "great", "right", "left", "next", "last", "first", "today", "tomorrow",
+    "the", "and", "for", "with", "this", "that", "from", "have", "will", "would", "should",
+    "please", "thanks", "thank", "hello", "there", "here", "they", "them", "then", "than", "when",
+    "what", "which", "where", "your", "you", "about", "after", "before", "because", "could",
+    "just", "like", "some", "more", "also", "into", "over", "under", "again", "other", "these",
+    "those", "been", "being", "were", "was", "are", "not", "but", "had", "has", "its", "our",
+    "out", "all", "any", "can", "did", "get", "got", "let", "may", "see", "use", "way", "who",
+    "how", "why", "yes", "yeah", "okay", "ok", "well", "really", "very", "much", "make", "made",
+    "need", "want", "look", "looks", "good", "great", "right", "left", "next", "last", "first",
+    "today", "tomorrow",
 ];
 
 /// Replacements implied by comparing the inserted dictation to the field later.
@@ -128,7 +127,10 @@ pub fn glossary_candidates(text: &str) -> Vec<String> {
 
     for (index, token) in tokens.iter().enumerate() {
         let trimmed = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-');
-        if trimmed.is_empty() || found.iter().any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+        if trimmed.is_empty()
+            || found
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
         {
             continue;
         }
@@ -391,7 +393,10 @@ mod tests {
 
     #[test]
     fn ignores_an_unrelated_document() {
-        let learned = from_edit("hello there", "Minutes of the Tuesday standup about payroll");
+        let learned = from_edit(
+            "hello there",
+            "Minutes of the Tuesday standup about payroll",
+        );
         assert!(learned.is_empty());
     }
 

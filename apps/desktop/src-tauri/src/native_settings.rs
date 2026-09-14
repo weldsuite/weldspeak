@@ -197,10 +197,7 @@ pub fn add_snippet(app: &AppHandle, trigger: String, expansion: String) -> Resul
     }
     patch_settings(app, |s| {
         s.snippets.retain(|snippet| snippet.trigger != trigger);
-        s.snippets.push(Snippet {
-            trigger,
-            expansion,
-        });
+        s.snippets.push(Snippet { trigger, expansion });
     });
     Ok(())
 }

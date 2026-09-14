@@ -106,16 +106,14 @@ fn waveform_glyphs(envelope: f32, thinking: bool) -> String {
 
 fn update_label(app: Option<&AppHandle>) {
     LABEL.with(|slot| {
-        let Some(label) = slot.borrow().as_ref() else {
+        let borrow = slot.borrow();
+        let Some(label) = borrow.as_ref() else {
             return;
         };
         let phase = PHASE.load(Ordering::Relaxed);
         let (text, orange) = if phase == 3 {
             (
-                notice_lock()
-                    .lock()
-                    .map(|g| g.clone())
-                    .unwrap_or_default(),
+                notice_lock().lock().map(|g| g.clone()).unwrap_or_default(),
                 false,
             )
         } else if phase == 1 || phase == 2 {
@@ -140,16 +138,13 @@ fn update_label(app: Option<&AppHandle>) {
         } else {
             (String::new(), true)
         };
+        let color = if orange {
+            NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0)
+        } else {
+            NSColor::colorWithCalibratedRed_green_blue_alpha(0.96, 0.96, 0.96, 1.0)
+        };
         unsafe {
-            if orange {
-                label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
-                    0.871, 0.443, 0.243, 1.0,
-                )));
-            } else {
-                label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
-                    0.96, 0.96, 0.96, 1.0,
-                )));
-            }
+            label.setTextColor(Some(&color));
             label.setStringValue(&NSString::from_str(&text));
         }
     });
