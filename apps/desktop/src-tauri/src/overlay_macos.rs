@@ -139,9 +139,9 @@ fn update_label(app: Option<&AppHandle>) {
             (String::new(), true)
         };
         let color = if orange {
-            NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0)
+            unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0) }
         } else {
-            NSColor::colorWithCalibratedRed_green_blue_alpha(0.96, 0.96, 0.96, 1.0)
+            unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.96, 0.96, 0.96, 1.0) }
         };
         unsafe {
             label.setTextColor(Some(&color));
