@@ -97,6 +97,33 @@ pnpm --filter @weldspeak/desktop-ui tauri dev
 
 In the desktop app, set the API base to `http://localhost:8787` and sign in.
 
+## Production domains
+
+| Host | Role |
+| --- | --- |
+| `weldspeak.com` / `www` | Marketing site (Vercel, `weldsuite/weldspeak-marketing`) |
+| `api.weldspeak.com` | API + dashboard Worker (`weldspeak-api`) |
+
+Desktop default API base is `https://api.weldspeak.com`. Production Worker
+`APP_URL` should be `https://api.weldspeak.com` so device-link pages stay on
+the same host as `/api` and `/auth`.
+
+### Cloudflare cutover (free apex for Vercel)
+
+1. In Workers → `weldspeak-api` → Custom Domains / Triggers, **add**
+   `api.weldspeak.com` (Cloudflare will create the DNS record).
+2. Set production secret/var `APP_URL=https://api.weldspeak.com`.
+3. Confirm `https://api.weldspeak.com/health` and `/api/me` work.
+4. **Remove** the Worker custom domain on `weldspeak.com` (and any route that
+   binds the apex to the Worker).
+5. In Cloudflare DNS for the apex, set the records Vercel shows for
+   `weldspeak.com` (typically A `216.150.1.1` / `216.150.16.1` or
+   `76.76.21.21`) and CNAME `www` → `cname.vercel-dns.com` (or the
+   project-specific target). Prefer DNS-only while verifying.
+6. Vercel project domains: apex serves marketing; `www` → `weldspeak.com` (308).
+
+Until step 4–5, leave apex on the Worker so the live API is not interrupted.
+
 ## Testing
 
 ```bash

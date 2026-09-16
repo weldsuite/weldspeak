@@ -35,6 +35,8 @@ tag = "v1"
 new_sqlite_classes = ["DictationSession"]
 
 [vars]
+# Local Vite dashboard. Production should be the API host that also serves the
+# dashboard SPA (https://api.weldspeak.com) so device-link URLs stay same-origin.
 APP_URL = "http://localhost:5173"
 CLEANUP_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 STT_MODEL = "@cf/deepgram/nova-3"

@@ -2,9 +2,10 @@
  * WeldSpeak API Worker.
  *
  * Serves three things from one deployment: the JSON API, the dictation
- * WebSocket, and the static web dashboard. Co-hosting the dashboard means the
- * browser talks to the API same-origin, so the device-approval path has no
- * CORS preflight and no second deployment target to keep in step.
+ * WebSocket, and the static web dashboard. Production hostname is
+ * `api.weldspeak.com` (marketing lives on Vercel at `weldspeak.com`).
+ * Co-hosting the dashboard on the API host keeps the browser same-origin, so
+ * the device-approval path has no CORS preflight.
  */
 
 import { Hono } from "hono";

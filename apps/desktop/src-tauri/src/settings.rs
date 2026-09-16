@@ -9,7 +9,7 @@ use weldspeak_core::inject::Preference;
 use crate::hotkey::Binding;
 
 /// Where the API lives. Overridable for local development.
-pub const DEFAULT_API_BASE: &str = "https://app.weldspeak.io";
+pub const DEFAULT_API_BASE: &str = "https://api.weldspeak.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
