@@ -20,7 +20,7 @@
 use anyhow::{anyhow, Result};
 use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::number::CFBoolean;
+use core_foundation::boolean::CFBoolean;
 use core_foundation::string::CFString;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
