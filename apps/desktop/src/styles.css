@@ -314,28 +314,33 @@ body.overlay-window::before { display: none; }
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-.panel {
+  gap: 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 18px 16px;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: var(--shadow-sm);
-  transition: border-color 160ms ease, box-shadow 160ms ease;
-}
-
-.panel:hover {
-  border-color: var(--border-strong);
+  border-radius: calc(var(--radius) + 4px);
+  padding: 6px 22px 10px;
+  backdrop-filter: blur(18px) saturate(1.15);
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
   box-shadow: var(--shadow-md);
 }
 
+.panel {
+  padding: 18px 0 16px;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel:first-child {
+  border-top: 0;
+}
+
 .panel.warning {
+  margin: 12px 0 4px;
+  padding: 16px 16px 14px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
   background: var(--warning-bg);
-  border-color: var(--warning-border);
   color: var(--warning-text);
 }
 
@@ -351,15 +356,15 @@ body.overlay-window::before { display: none; }
 
 .panel-title {
   margin: 0 0 4px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .panel-body {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .account-email {
@@ -477,7 +482,17 @@ button.primary:hover {
 
 button.ghost {
   background: transparent;
+  border-color: transparent;
   box-shadow: none;
+  color: var(--muted);
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+button.ghost:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-color: transparent;
 }
 
 input:focus-visible,
