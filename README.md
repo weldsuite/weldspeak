@@ -101,12 +101,14 @@ In the desktop app, set the API base to `http://localhost:8787` and sign in.
 
 | Host | Role |
 | --- | --- |
-| `weldspeak.com` / `www` | Marketing site (Vercel, `weldsuite/weldspeak-marketing`) |
+| `weldspeak.com` / `www` | Marketing site (Vercel, `weldsuite/weldspeak-marketing`) — no Clerk |
+| `speak.weldsuite.org` | Sign-in + Stripe Checkout / portal entry (same marketing app, auth host) |
 | `api.weldspeak.com` | API + dashboard Worker (`weldspeak-api`) |
 
 Desktop default API base is `https://api.weldspeak.com`. Production Worker
 `APP_URL` should be `https://api.weldspeak.com` so device-link pages stay on
-the same host as `/api` and `/auth`.
+the same host as `/api` and `/auth`. Clerk sessions for WeldSpeak live on
+`speak.weldsuite.org` (shared WeldSuite Clerk) — not on the marketing apex.
 
 ### Cloudflare cutover (free apex for Vercel)
 
