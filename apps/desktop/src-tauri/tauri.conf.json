@@ -15,16 +15,16 @@
       {
         "label": "settings",
         "title": "WeldSpeak",
-        "width": 720,
-        "height": 560,
+        "width": 640,
+        "height": 700,
         "resizable": true,
         "visible": false
       },
       {
         "label": "overlay",
         "url": "index.html#/overlay",
-        "width": 320,
-        "height": 72,
+        "width": 360,
+        "height": 80,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
