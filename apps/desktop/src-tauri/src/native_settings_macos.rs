@@ -289,14 +289,37 @@ fn content_view() -> Option<Retained<NSView>> {
 }
 
 fn add_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f64, h: f64) {
+    add_colored_label(parent, text, size, x, y, w, h, theme::TEXT_RGB, false);
+}
+
+fn add_muted_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f64, h: f64) {
+    add_colored_label(parent, text, size, x, y, w, h, theme::MUTED_RGB, false);
+}
+
+fn add_colored_label(
+    parent: &NSView,
+    text: &str,
+    size: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    rgb: (u8, u8, u8),
+    bold: bool,
+) {
     let label = unsafe { NSTextField::new(mtm()) };
     unsafe {
         label.setEditable(false);
         label.setBezeled(false);
         label.setDrawsBackground(false);
         label.setSelectable(false);
-        label.setFont(Some(&NSFont::systemFontOfSize(size)));
-        let (tr, tg, tb) = theme::TEXT_RGB;
+        let font = if bold {
+            NSFont::boldSystemFontOfSize(size)
+        } else {
+            NSFont::systemFontOfSize(size)
+        };
+        label.setFont(Some(&font));
+        let (tr, tg, tb) = rgb;
         label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
             tr as f64 / 255.0,
             tg as f64 / 255.0,
@@ -309,6 +332,26 @@ fn add_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f64, h: 
     }
 }
 
+fn add_surface_card(parent: &NSView, x: f64, y: f64, w: f64, h: f64) {
+    let card = unsafe { NSTextField::new(mtm()) };
+    let (sr, sg, sb) = theme::SURFACE_RGB;
+    unsafe {
+        card.setEditable(false);
+        card.setBezeled(false);
+        card.setSelectable(false);
+        card.setDrawsBackground(true);
+        card.setStringValue(&NSString::from_str(""));
+        card.setBackgroundColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+            sr as f64 / 255.0,
+            sg as f64 / 255.0,
+            sb as f64 / 255.0,
+            1.0,
+        )));
+        card.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)));
+        parent.addSubview(&card);
+    }
+}
+
 fn add_button(
     parent: &NSView,
     title: &str,
@@ -317,16 +360,41 @@ fn add_button(
     w: f64,
     action: Sel,
 ) -> Retained<NSButton> {
+    add_styled_button(parent, title, x, y, w, action, false)
+}
+
+fn add_primary_button(
+    parent: &NSView,
+    title: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    action: Sel,
+) -> Retained<NSButton> {
+    add_styled_button(parent, title, x, y, w, action, true)
+}
+
+fn add_styled_button(
+    parent: &NSView,
+    title: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    action: Sel,
+    primary: bool,
+) -> Retained<NSButton> {
     let button = unsafe { NSButton::new(mtm()) };
     unsafe {
         button.setTitle(&NSString::from_str(title));
-        button.setBezelStyle(NSBezelStyle::Push);
+        button.setBezelStyle(NSBezelStyle::FlexiblePush);
         button.setButtonType(NSButtonType::MomentaryPushIn);
-        button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 28.0)));
+        button.setBordered(true);
+        button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 30.0)));
         button.setAction(Some(action));
         if let Some(target) = action_target() {
             button.setTarget(Some(AsRef::<AnyObject>::as_ref(&*target)));
         }
+        let _ = primary;
         parent.addSubview(&button);
     }
     button
@@ -413,36 +481,38 @@ fn build_home() {
     let signed_in = native_settings::is_signed_in(app);
     let key = native_settings::hotkey_label(app);
     let words = native_settings::words_dictated(app);
-    add_label(
+    add_colored_label(
         &content,
-        &format!("{words} words · Hold {key} to talk"),
-        16.0,
-        24.0,
-        h - 40.0,
+        "Home",
+        22.0,
+        28.0,
+        h - 48.0,
         700.0,
-        24.0,
+        28.0,
+        theme::TEXT_RGB,
+        true,
     );
     if signed_in {
-        add_label(
+        add_muted_label(
             &content,
-            "Recent dictations",
+            &format!("{words} words · Hold {key} to talk · Recent dictations"),
             13.0,
-            24.0,
-            h - 68.0,
+            28.0,
+            h - 76.0,
             700.0,
             20.0,
         );
     } else {
-        add_label(
+        add_muted_label(
             &content,
-            "Sign in to sync and view transcript history.",
+            &format!("{words} words · Hold {key} to talk. Sign in to sync history."),
             13.0,
-            24.0,
-            h - 68.0,
+            28.0,
+            h - 76.0,
             700.0,
             20.0,
         );
-        add_button(&content, "Sign in", 24.0, h - 104.0, 110.0, sel!(signIn:));
+        add_primary_button(&content, "Sign in", 28.0, h - 118.0, 110.0, sel!(signIn:));
     }
 
     let rows = TRANSCRIPTS
@@ -450,20 +520,29 @@ fn build_home() {
         .ok()
         .map(|r| r.clone())
         .unwrap_or_default();
-    let mut y = h - if signed_in { 100.0 } else { 140.0 };
+    let card_top = if signed_in { h - 120.0 } else { h - 160.0 };
+    let card_h = (card_top - 56.0).max(120.0);
+    add_surface_card(&content, 24.0, 48.0, 720.0, card_h);
+
+    let mut y = card_top - 16.0;
     for (i, row) in rows.iter().take(12).enumerate() {
-        let line = format!(
-            "{}  ·  {}",
-            native_settings::truncate(&row.formatted, 70),
-            row.app_name.as_deref().unwrap_or("")
-        );
-        add_label(&content, &line, 12.0, 24.0, y, 560.0, 36.0);
+        let line = native_settings::truncate(&row.formatted, 72);
+        let when = {
+            let raw = row.created_at.trim();
+            if let Some((date, time)) = raw.split_once('T') {
+                format!("{date} {}", time.get(..5).unwrap_or(""))
+            } else {
+                native_settings::truncate(raw, 16)
+            }
+        };
+        add_label(&content, &line, 13.0, 40.0, y, 460.0, 28.0);
+        add_muted_label(&content, &when, 12.0, 510.0, y + 4.0, 100.0, 20.0);
         add_button(
             &content,
             "Copy",
-            600.0,
-            y + 4.0,
-            70.0,
+            612.0,
+            y + 2.0,
+            56.0,
             match i {
                 0 => sel!(copy0:),
                 1 => sel!(copy1:),
@@ -479,12 +558,13 @@ fn build_home() {
                 _ => sel!(copy11:),
             },
         );
+        // Delete stays available via existing selectors; tuck beside Copy on wider rows.
         add_button(
             &content,
             "Delete",
-            680.0,
-            y + 4.0,
-            70.0,
+            676.0,
+            y + 2.0,
+            56.0,
             match i {
                 0 => sel!(del0:),
                 1 => sel!(del1:),
@@ -500,8 +580,8 @@ fn build_home() {
                 _ => sel!(del11:),
             },
         );
-        y -= 44.0;
-        if y < 40.0 {
+        y -= 40.0;
+        if y < 64.0 {
             break;
         }
     }

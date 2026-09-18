@@ -18,10 +18,14 @@ pub const WINDOW_MIN_HEIGHT: i32 = 540;
 pub const SIDEBAR_WIDTH: i32 = 212;
 
 /// Shared Hub + pill palette — cool mist content, slate rail, teal accent
-/// (aligned with the Wispr Flow–adjacent webview refresh; no cream/orange charcoal).
+/// (Wispr Flow–adjacent; no cream/orange charcoal).
 pub mod theme {
     /// Content background `#f7f9fb`
     pub const CONTENT_BG_RGB: (u8, u8, u8) = (0xf7, 0xf9, 0xfb);
+    /// Soft white surface / history card `#ffffff`
+    pub const SURFACE_RGB: (u8, u8, u8) = (0xff, 0xff, 0xff);
+    /// Hairline on surfaces `#e2e8f0`
+    pub const SURFACE_BORDER_RGB: (u8, u8, u8) = (0xe2, 0xe8, 0xf0);
     /// Sidebar `#0f172a`
     pub const SIDEBAR_BG_RGB: (u8, u8, u8) = (0x0f, 0x17, 0x2a);
     /// Selected nav chip `#1e293b`

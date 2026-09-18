@@ -11,8 +11,9 @@ use tauri::{AppHandle, Manager, PhysicalPosition};
 use crate::audio::Capture;
 use crate::AppState;
 
-const COMPACT_W: i32 = 104;
-const COMPACT_H: i32 = 44;
+/// Compact Wispr-like capsule (PR #7’s 104×44 read oversized).
+const COMPACT_W: i32 = 72;
+const COMPACT_H: i32 = 30;
 
 /// 0 idle (hidden), 1 listening, 2 thinking, 3 notice.
 static PHASE: AtomicU8 = AtomicU8::new(0);
@@ -33,7 +34,7 @@ fn notice_size(message: &str) -> (i32, i32) {
     if message.is_empty() {
         return (COMPACT_W, COMPACT_H);
     }
-    let width = (92.0 + message.len() as f64 * 6.8).clamp(132.0, 320.0) as i32;
+    let width = (84.0 + message.len() as f64 * 6.4).clamp(120.0, 280.0) as i32;
     (width, COMPACT_H)
 }
 

@@ -35,7 +35,7 @@ fn panel() -> Option<Retained<NSPanel>> {
 
 pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     let mtm = mtm();
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(104.0, 44.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(72.0, 30.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel = unsafe {
         NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -87,10 +87,10 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             1.0,
         );
         label.setTextColor(Some(&label_fg));
-        label.setFont(Some(&NSFont::boldSystemFontOfSize(15.0)));
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(12.0)));
         label.setFrame(NSRect::new(
-            NSPoint::new(10.0, 10.0),
-            NSSize::new(84.0, 24.0),
+            NSPoint::new(8.0, 5.0),
+            NSSize::new(56.0, 20.0),
         ));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);

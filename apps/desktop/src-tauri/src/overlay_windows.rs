@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::{current_level, notice_lock, PHASE};
 
 static HWND_BITS: AtomicIsize = AtomicIsize::new(0);
-static SIZE: Mutex<(i32, i32)> = Mutex::new((104, 44));
+static SIZE: Mutex<(i32, i32)> = Mutex::new((72, 30));
 static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
 
 fn rgb(c: (u8, u8, u8)) -> COLORREF {
@@ -60,8 +60,8 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             WS_POPUP,
             0,
             0,
-            104,
-            44,
+            72,
+            30,
             HWND::default(),
             windows::Win32::UI::WindowsAndMessaging::HMENU::default(),
             module(),
@@ -69,10 +69,10 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         )
         .expect("overlay window");
         // Soft glass opacity — WS_EX_LAYERED needs an alpha before the pill shows.
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 232, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 236, LWA_ALPHA);
         HWND_BITS.store(window.0 as isize, Ordering::Relaxed);
         let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE));
-        round_region(window, 104, 44);
+        round_region(window, 72, 30);
     }
     Ok(())
 }
@@ -96,7 +96,7 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         return;
     }
     unsafe {
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 232, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 236, LWA_ALPHA);
         round_region(window, w, h);
         let _ = MoveWindow(window, x, y, w, h, true);
         let _ = SetWindowPos(
@@ -170,7 +170,7 @@ fn paint(window: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(window, &mut ps);
-        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((104, 44));
+        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((72, 30));
         let bg = CreateSolidBrush(rgb(theme::OVERLAY_BG_RGB));
         let rect = RECT {
             left: 0,
@@ -196,7 +196,7 @@ fn draw_notice(hdc: HDC, text: &str, h: i32) {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, rgb(theme::OVERLAY_TEXT_RGB));
         let font = CreateFontW(
-            13,
+            12,
             0,
             0,
             0,
@@ -213,7 +213,7 @@ fn draw_notice(hdc: HDC, text: &str, h: i32) {
         );
         let old = SelectObject(hdc, font);
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let _ = TextOutW(hdc, 14, (h / 2) - 8, &wide);
+        let _ = TextOutW(hdc, 12, (h / 2) - 7, &wide);
         SelectObject(hdc, old);
         let _ = DeleteObject(font);
     }
@@ -244,12 +244,12 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
     unsafe {
         let brush = CreateSolidBrush(rgb(color));
         let old_pen = SelectObject(hdc, GetStockObject(BLACK_PEN));
-        let gap = 5;
-        let bar_w = 4;
+        let gap = 3;
+        let bar_w = 3;
         let count = 5;
         let total = count * bar_w + (count - 1) * gap;
         let start_x = (w - total) / 2;
-        let max_h = (h as f32 - 16.0).max(14.0);
+        let max_h = (h as f32 - 10.0).max(10.0);
         for i in 0..count {
             let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
             let floor = if thinking { 0.18 } else { 0.14 };
