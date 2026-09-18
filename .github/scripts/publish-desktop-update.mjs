@@ -98,6 +98,9 @@ execFileSync(
     "release",
     "create",
     TAG,
+    // Pin the rolling tag to the installer commit (ci/desktop SHA), not default main.
+    "--target",
+    process.env.GITHUB_SHA || "ci/desktop",
     "--prerelease",
     "--title",
     `WeldSpeak ${version}`,

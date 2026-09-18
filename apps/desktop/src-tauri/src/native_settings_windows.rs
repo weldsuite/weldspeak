@@ -8,24 +8,26 @@ use tauri::{AppHandle, Manager};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateRoundRectRgn, CreateSolidBrush, DeleteObject, FillRect, FillRgn, InvalidateRect,
-    SetBkColor, SetBkMode, SetTextColor, HBRUSH, HDC, TRANSPARENT,
+    CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, FillRect, FillRgn,
+    InvalidateRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, CLEARTYPE_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, FF_DONTCARE, FW_SEMIBOLD, HBRUSH, HDC,
+    OUT_TT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVS_REPORT,
-    LVS_SHOWSELALWAYS, LVS_SINGLESEL, WC_LISTVIEWW,
+    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVS_NOCOLUMNHEADER,
+    LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, WC_LISTVIEWW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, GetClientRect, GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW,
-    IsWindow, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SendMessageW,
+    GetWindowTextW, IsWindow, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SendMessageW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, CS_HREDRAW, CS_VREDRAW,
     CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, MINMAXINFO, SW_HIDE, SW_SHOWNORMAL,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
-    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
-    WM_KEYUP, WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_BORDER, WS_CHILD,
+    WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const BM_GETCHECK: u32 = 0x00F0;
@@ -39,8 +41,11 @@ const CB_SETCURSEL: u32 = 0x014E;
 const CBS_DROPDOWNLIST: u32 = 0x0003;
 const BS_AUTOCHECKBOX: u32 = 0x0003;
 const BS_PUSHBUTTON: u32 = 0x0000;
+const BS_OWNERDRAW: u32 = 0x000B;
 const LVM_FIRST: u32 = 0x1000;
-const LVM_GETITEMCOUNT: u32 = LVM_FIRST + 4;
+const LVM_SETBKCOLOR: u32 = LVM_FIRST + 1;
+const LVM_SETTEXTCOLOR: u32 = LVM_FIRST + 36;
+const LVM_SETTEXTBKCOLOR: u32 = LVM_FIRST + 38;
 const LVM_DELETEALLITEMS: u32 = LVM_FIRST + 9;
 const LVM_INSERTITEMA: u32 = LVM_FIRST + 77; // Unicode: LVM_INSERTITEMW = LVM_FIRST+77
 const LVM_SETITEMTEXTA: u32 = LVM_FIRST + 116; // LVM_SETITEMTEXTW
@@ -56,6 +61,7 @@ const LVCF_TEXT: u32 = 0x0004;
 const LVCFMT_LEFT: i32 = 0;
 const LVNI_SELECTED: u32 = 0x0002;
 const EM_SETCUEBANNER: u32 = 0x1501;
+const ODS_SELECTED: u32 = 0x0001;
 
 use crate::hotkey;
 use crate::native_settings::{
@@ -128,6 +134,9 @@ static DICT_FILTER: Mutex<String> = Mutex::new(String::new());
 static STATUS: Mutex<Option<crate::commands::Status>> = Mutex::new(None);
 static CONTENT_BRUSH: OnceLock<isize> = OnceLock::new();
 static SIDEBAR_BRUSH: OnceLock<isize> = OnceLock::new();
+static SURFACE_BRUSH: OnceLock<isize> = OnceLock::new();
+static UI_FONT: OnceLock<isize> = OnceLock::new();
+static TITLE_FONT: OnceLock<isize> = OnceLock::new();
 
 fn content_brush() -> HBRUSH {
     let bits = *CONTENT_BRUSH
@@ -139,6 +148,58 @@ fn sidebar_brush() -> HBRUSH {
     let bits = *SIDEBAR_BRUSH
         .get_or_init(|| unsafe { CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB)).0 as isize });
     HBRUSH(bits as *mut c_void)
+}
+
+fn surface_brush() -> HBRUSH {
+    let bits = *SURFACE_BRUSH
+        .get_or_init(|| unsafe { CreateSolidBrush(rgb(theme::SURFACE_RGB)).0 as isize });
+    HBRUSH(bits as *mut c_void)
+}
+
+fn ui_font() -> windows::Win32::Graphics::Gdi::HFONT {
+    let bits = *UI_FONT.get_or_init(|| unsafe {
+        CreateFontW(
+            15,
+            0,
+            0,
+            0,
+            FW_SEMIBOLD.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET.0.into(),
+            OUT_TT_PRECIS.0.into(),
+            CLIP_DEFAULT_PRECIS.0.into(),
+            CLEARTYPE_QUALITY.0.into(),
+            u32::from(DEFAULT_PITCH.0) | u32::from(FF_DONTCARE.0),
+            w!("Segoe UI"),
+        )
+        .0 as isize
+    });
+    windows::Win32::Graphics::Gdi::HFONT(bits as *mut c_void)
+}
+
+fn title_font() -> windows::Win32::Graphics::Gdi::HFONT {
+    let bits = *TITLE_FONT.get_or_init(|| unsafe {
+        CreateFontW(
+            22,
+            0,
+            0,
+            0,
+            FW_SEMIBOLD.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET.0.into(),
+            OUT_TT_PRECIS.0.into(),
+            CLIP_DEFAULT_PRECIS.0.into(),
+            CLEARTYPE_QUALITY.0.into(),
+            u32::from(DEFAULT_PITCH.0) | u32::from(FF_DONTCARE.0),
+            w!("Segoe UI Semibold"),
+        )
+        .0 as isize
+    });
+    windows::Win32::Graphics::Gdi::HFONT(bits as *mut c_void)
 }
 
 #[repr(C)]
@@ -180,6 +241,114 @@ fn set_text(hwnd: HWND, text: &str) {
     let wide = wide_str(text);
     unsafe {
         let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
+    }
+}
+
+fn set_font(hwnd: HWND, font: windows::Win32::Graphics::Gdi::HFONT) {
+    unsafe {
+        SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+    }
+}
+
+fn soft_button(parent: HWND, text: PCWSTR, x: i32, y: i32, w: i32, h: i32, id: i32) -> HWND {
+    child(
+        parent,
+        w!("BUTTON"),
+        text,
+        WINDOW_STYLE(WS_TABSTOP.0 | BS_OWNERDRAW),
+        x,
+        y,
+        w,
+        h,
+        id,
+    )
+}
+
+#[repr(C)]
+struct DrawItemStruct {
+    ctl_type: u32,
+    ctl_id: u32,
+    item_id: u32,
+    item_action: u32,
+    item_state: u32,
+    hwnd_item: HWND,
+    hdc: HDC,
+    rc_item: RECT,
+    item_data: usize,
+}
+
+fn paint_owner_button(dis: &DrawItemStruct, primary: bool) {
+    unsafe {
+        let pressed = dis.item_state & ODS_SELECTED != 0;
+        let fill = if primary {
+            if pressed {
+                theme::BRAND_RGB
+            } else {
+                theme::OVERLAY_LISTEN_RGB
+            }
+        } else if pressed {
+            theme::SURFACE_BORDER_RGB
+        } else {
+            theme::SURFACE_RGB
+        };
+        let brush = CreateSolidBrush(rgb(fill));
+        let rgn = CreateRoundRectRgn(
+            dis.rc_item.left,
+            dis.rc_item.top,
+            dis.rc_item.right,
+            dis.rc_item.bottom,
+            16,
+            16,
+        );
+        if primary {
+            let _ = FillRgn(dis.hdc, rgn, brush);
+        } else {
+            let edge = CreateSolidBrush(rgb(theme::SURFACE_BORDER_RGB));
+            let frame = CreateRoundRectRgn(
+                dis.rc_item.left,
+                dis.rc_item.top,
+                dis.rc_item.right,
+                dis.rc_item.bottom,
+                16,
+                16,
+            );
+            let inner = CreateRoundRectRgn(
+                dis.rc_item.left + 1,
+                dis.rc_item.top + 1,
+                dis.rc_item.right - 1,
+                dis.rc_item.bottom - 1,
+                14,
+                14,
+            );
+            let _ = FillRgn(dis.hdc, frame, edge);
+            let _ = FillRgn(dis.hdc, inner, brush);
+            let _ = DeleteObject(edge);
+            let _ = DeleteObject(frame);
+            let _ = DeleteObject(inner);
+        }
+        let mut text = [0u16; 64];
+        let len = GetWindowTextW(dis.hwnd_item, &mut text);
+        SetBkMode(dis.hdc, TRANSPARENT);
+        SetTextColor(
+            dis.hdc,
+            rgb(if primary {
+                theme::OVERLAY_TEXT_RGB
+            } else {
+                theme::TEXT_RGB
+            }),
+        );
+        let font = ui_font();
+        let old = SelectObject(dis.hdc, font);
+        if len > 0 {
+            let wide = &text[..len as usize];
+            let text_w = (wide.len() as i32 * 7).min(dis.rc_item.right - dis.rc_item.left - 8);
+            let x = dis.rc_item.left + ((dis.rc_item.right - dis.rc_item.left) - text_w).max(0) / 2;
+            let y = dis.rc_item.top + ((dis.rc_item.bottom - dis.rc_item.top) - 16).max(0) / 2;
+            let _ = windows::Win32::Graphics::Gdi::TextOutW(dis.hdc, x, y, wide);
+        }
+        SelectObject(dis.hdc, old);
+        let _ = DeleteObject(brush);
+        let _ = DeleteObject(rgn);
     }
 }
 
@@ -344,60 +513,65 @@ fn spawn_shell(parent: HWND) {
     }
 
     // Home
-    child(
+    let home_header = child(
         parent,
         w!("STATIC"),
-        w!(""),
+        w!("Home"),
         WINDOW_STYLE(0),
-        SIDEBAR_WIDTH + 24,
-        20,
-        700,
+        SIDEBAR_WIDTH + 28,
         24,
+        700,
+        28,
         ID_HOME_HEADER,
     );
-    child(
+    set_font(home_header, title_font());
+    let home_status = child(
         parent,
         w!("STATIC"),
         w!(""),
         WINDOW_STYLE(0),
-        SIDEBAR_WIDTH + 24,
-        48,
+        SIDEBAR_WIDTH + 28,
+        56,
         700,
-        20,
+        22,
         ID_HOME_STATUS,
     );
-    child(
+    set_font(home_status, ui_font());
+    soft_button(
         parent,
-        w!("BUTTON"),
         w!("Sign in"),
-        WS_TABSTOP,
-        SIDEBAR_WIDTH + 24,
-        76,
-        110,
-        28,
+        SIDEBAR_WIDTH + 28,
+        88,
+        108,
+        32,
         ID_HOME_SIGN_IN,
     );
-    create_listview(parent, ID_HOME_LIST, SIDEBAR_WIDTH + 24, 116, 700, 460);
-    child(
+    create_listview(
         parent,
-        w!("BUTTON"),
+        ID_HOME_LIST,
+        SIDEBAR_WIDTH + 28,
+        132,
+        700,
+        430,
+        false,
+        true,
+    );
+    soft_button(
+        parent,
         w!("Copy"),
-        WS_TABSTOP,
-        SIDEBAR_WIDTH + 24,
-        590,
-        90,
-        28,
+        SIDEBAR_WIDTH + 28,
+        580,
+        96,
+        34,
         ID_HOME_COPY,
     );
-    child(
+    soft_button(
         parent,
-        w!("BUTTON"),
         w!("Delete"),
-        WS_TABSTOP,
-        SIDEBAR_WIDTH + 124,
-        590,
-        90,
-        28,
+        SIDEBAR_WIDTH + 136,
+        580,
+        96,
+        34,
         ID_HOME_DELETE,
     );
 
@@ -468,7 +642,7 @@ fn spawn_shell(parent: HWND) {
         28,
         ID_DICT_ADD,
     );
-    create_listview(parent, ID_DICT_LIST, SIDEBAR_WIDTH + 24, 124, 700, 450);
+    create_listview(parent, ID_DICT_LIST, SIDEBAR_WIDTH + 24, 124, 700, 450, true, false);
     child(
         parent,
         w!("BUTTON"),
@@ -526,7 +700,7 @@ fn spawn_shell(parent: HWND) {
         28,
         ID_SNIP_ADD,
     );
-    create_listview(parent, ID_SNIP_LIST, SIDEBAR_WIDTH + 24, 92, 700, 480);
+    create_listview(parent, ID_SNIP_LIST, SIDEBAR_WIDTH + 24, 92, 700, 480, true, false);
     child(
         parent,
         w!("BUTTON"),
@@ -780,19 +954,29 @@ fn set_cue(hwnd: HWND, text: &str) {
     }
 }
 
-fn create_listview(parent: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
+#[allow(clippy::too_many_arguments)]
+fn create_listview(
+    parent: HWND,
+    id: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    bordered: bool,
+    headerless: bool,
+) -> HWND {
+    let mut style = WS_TABSTOP.0 | WS_VISIBLE.0 | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS;
+    if bordered {
+        style |= WS_BORDER.0;
+    }
+    if headerless {
+        style |= LVS_NOCOLUMNHEADER;
+    }
     let hwnd = child(
         parent,
         WC_LISTVIEWW,
         w!(""),
-        WINDOW_STYLE(
-            WS_TABSTOP.0
-                | WS_BORDER.0
-                | WS_VISIBLE.0
-                | LVS_REPORT
-                | LVS_SINGLESEL
-                | LVS_SHOWSELALWAYS,
-        ),
+        WINDOW_STYLE(style),
         x,
         y,
         w,
@@ -805,6 +989,25 @@ fn create_listview(parent: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWN
             LVM_SETEXTENDEDLISTVIEWSTYLE,
             WPARAM((LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as usize),
             LPARAM((LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize),
+        );
+        // Soft white sheet — no classic grid chrome.
+        SendMessageW(
+            hwnd,
+            LVM_SETBKCOLOR,
+            WPARAM(0),
+            LPARAM(rgb(theme::SURFACE_RGB).0 as isize),
+        );
+        SendMessageW(
+            hwnd,
+            LVM_SETTEXTBKCOLOR,
+            WPARAM(0),
+            LPARAM(rgb(theme::SURFACE_RGB).0 as isize),
+        );
+        SendMessageW(
+            hwnd,
+            LVM_SETTEXTCOLOR,
+            WPARAM(0),
+            LPARAM(rgb(theme::TEXT_RGB).0 as isize),
         );
     }
     hwnd
@@ -1001,7 +1204,7 @@ fn layout(parent: HWND) {
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
     let content_w = (w - SIDEBAR_WIDTH - 48).max(200);
-    let list_h = (h - 160).max(120);
+    let dict_list_h = (h - 160).max(120);
     unsafe {
         let _ = MoveWindow(find_child(parent, ID_SIDEBAR), 0, 0, SIDEBAR_WIDTH, h, true);
         let _ = MoveWindow(
@@ -1026,27 +1229,53 @@ fn layout(parent: HWND) {
             );
         }
         let _ = MoveWindow(
+            find_child(parent, ID_HOME_HEADER),
+            SIDEBAR_WIDTH + 28,
+            24,
+            content_w,
+            28,
+            true,
+        );
+        let _ = MoveWindow(
+            find_child(parent, ID_HOME_STATUS),
+            SIDEBAR_WIDTH + 28,
+            56,
+            content_w,
+            22,
+            true,
+        );
+        let _ = MoveWindow(
+            find_child(parent, ID_HOME_SIGN_IN),
+            SIDEBAR_WIDTH + 28,
+            88,
+            108,
+            32,
+            true,
+        );
+        let list_top = 132;
+        let list_h = (h - list_top - 64).max(120);
+        let _ = MoveWindow(
             find_child(parent, ID_HOME_LIST),
-            SIDEBAR_WIDTH + 24,
-            116,
+            SIDEBAR_WIDTH + 28,
+            list_top,
             content_w,
             list_h,
             true,
         );
         let _ = MoveWindow(
             find_child(parent, ID_HOME_COPY),
-            SIDEBAR_WIDTH + 24,
-            h - 48,
-            90,
-            28,
+            SIDEBAR_WIDTH + 28,
+            h - 52,
+            96,
+            34,
             true,
         );
         let _ = MoveWindow(
             find_child(parent, ID_HOME_DELETE),
-            SIDEBAR_WIDTH + 124,
-            h - 48,
-            90,
-            28,
+            SIDEBAR_WIDTH + 136,
+            h - 52,
+            96,
+            34,
             true,
         );
         let _ = MoveWindow(
@@ -1054,7 +1283,7 @@ fn layout(parent: HWND) {
             SIDEBAR_WIDTH + 24,
             124,
             content_w,
-            list_h - 20,
+            dict_list_h - 20,
             true,
         );
         let _ = MoveWindow(
@@ -1070,7 +1299,7 @@ fn layout(parent: HWND) {
             SIDEBAR_WIDTH + 24,
             92,
             content_w,
-            list_h + 20,
+            dict_list_h + 20,
             true,
         );
         let _ = MoveWindow(
@@ -1133,35 +1362,32 @@ fn apply_page(parent: HWND, page: Page, app: &AppHandle) {
 }
 
 fn ensure_home_columns(list: HWND) {
-    let count = unsafe { SendMessageW(list, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 };
-    // Columns only once: use user data flag on list.
     let flagged = unsafe { GetWindowLongPtrW(list, GWLP_USERDATA) };
     if flagged == 0 {
-        insert_column(list, 0, "Transcript", 420);
-        insert_column(list, 1, "App", 140);
-        insert_column(list, 2, "When", 140);
+        // Headerless two-column sheet: dictation text + relative time.
+        insert_column(list, 0, "", 520);
+        insert_column(list, 1, "", 140);
         unsafe {
             SetWindowLongPtrW(list, GWLP_USERDATA, 1);
         }
     }
-    let _ = count;
 }
 
 fn apply_home(parent: HWND, app: &AppHandle) {
     let signed_in = native_settings::is_signed_in(app);
     let key = native_settings::hotkey_label(app);
     let words = native_settings::words_dictated(app);
-    set_text(
-        find_child(parent, ID_HOME_HEADER),
-        &format!("{words} words · Hold {key} to talk"),
-    );
+    set_text(find_child(parent, ID_HOME_HEADER), "Home");
     if signed_in {
-        set_text(find_child(parent, ID_HOME_STATUS), "Recent dictations");
+        set_text(
+            find_child(parent, ID_HOME_STATUS),
+            &format!("{words} words · Hold {key} to talk · Recent dictations"),
+        );
         show_child(parent, ID_HOME_SIGN_IN, false);
     } else {
         set_text(
             find_child(parent, ID_HOME_STATUS),
-            "Sign in to sync and view transcript history.",
+            &format!("{words} words · Hold {key} to talk. Sign in to sync history."),
         );
         show_child(parent, ID_HOME_SIGN_IN, true);
     }
@@ -1170,12 +1396,24 @@ fn apply_home(parent: HWND, app: &AppHandle) {
     clear_list(list);
     if let Ok(rows) = TRANSCRIPTS.lock() {
         for (i, row) in rows.iter().enumerate() {
-            let text = native_settings::truncate(&row.formatted, 80);
-            let app_name = row.app_name.clone().unwrap_or_default();
-            let when = native_settings::truncate(&row.created_at, 19);
-            insert_row(list, i as i32, &[&text, &app_name, &when]);
+            let text = native_settings::truncate(&row.formatted, 88);
+            let when = friendly_when(&row.created_at);
+            insert_row(list, i as i32, &[&text, &when]);
         }
     }
+}
+
+fn friendly_when(raw: &str) -> String {
+    // Keep ISO-ish stamps short; empty → blank.
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some((date, time)) = trimmed.split_once('T') {
+        let clock = time.get(..5).unwrap_or(time);
+        return format!("{date} {clock}");
+    }
+    native_settings::truncate(trimmed, 16)
 }
 
 fn ensure_dict_columns(list: HWND) {
@@ -1460,6 +1698,40 @@ unsafe extern "system" fn wnd_proc(
                     CreateRoundRectRgn(12, chip_y, SIDEBAR_WIDTH - 12, chip_y + 36, 14, 14);
                 let _ = FillRgn(hdc, chip_rgn, chip_brush);
 
+                // Soft white history card behind Home list (Wispr-like sheet).
+                if page == Page::Home {
+                    let card_left = SIDEBAR_WIDTH + 20;
+                    let card_top = 120;
+                    let card_right = rect.right - 20;
+                    let card_bottom = rect.bottom - 60;
+                    if card_right > card_left + 40 && card_bottom > card_top + 40 {
+                        let border = CreateSolidBrush(rgb(theme::SURFACE_BORDER_RGB));
+                        let outer = CreateRoundRectRgn(
+                            card_left,
+                            card_top,
+                            card_right,
+                            card_bottom,
+                            18,
+                            18,
+                        );
+                        let _ = FillRgn(hdc, outer, border);
+                        let surface = CreateSolidBrush(rgb(theme::SURFACE_RGB));
+                        let inner = CreateRoundRectRgn(
+                            card_left + 1,
+                            card_top + 1,
+                            card_right - 1,
+                            card_bottom - 1,
+                            16,
+                            16,
+                        );
+                        let _ = FillRgn(hdc, inner, surface);
+                        let _ = DeleteObject(border);
+                        let _ = DeleteObject(outer);
+                        let _ = DeleteObject(surface);
+                        let _ = DeleteObject(inner);
+                    }
+                }
+
                 let _ = DeleteObject(brush);
                 let _ = DeleteObject(side);
                 let _ = DeleteObject(accent);
@@ -1467,6 +1739,24 @@ unsafe extern "system" fn wnd_proc(
                 let _ = DeleteObject(chip_rgn);
             }
             LRESULT(1)
+        }
+        WM_DRAWITEM => {
+            let dis = lparam.0 as *const DrawItemStruct;
+            if !dis.is_null() {
+                let item = unsafe { &*dis };
+                match item.ctl_id as i32 {
+                    ID_HOME_SIGN_IN => {
+                        paint_owner_button(item, true);
+                        return LRESULT(1);
+                    }
+                    ID_HOME_COPY | ID_HOME_DELETE => {
+                        paint_owner_button(item, false);
+                        return LRESULT(1);
+                    }
+                    _ => {}
+                }
+            }
+            LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLORLISTBOX => {
             let hdc = HDC(wparam.0 as *mut c_void);
@@ -1495,6 +1785,16 @@ unsafe extern "system" fn wnd_proc(
                     SetTextColor(hdc, rgb(fg));
                     SetBkColor(hdc, rgb(theme::SIDEBAR_BG_RGB));
                     return LRESULT(sidebar_brush().0 as isize);
+                }
+                if id == ID_HOME_STATUS {
+                    SetTextColor(hdc, rgb(theme::MUTED_RGB));
+                    SetBkColor(hdc, rgb(theme::CONTENT_BG_RGB));
+                    return LRESULT(content_brush().0 as isize);
+                }
+                if id == ID_HOME_LIST {
+                    SetTextColor(hdc, rgb(theme::TEXT_RGB));
+                    SetBkColor(hdc, rgb(theme::SURFACE_RGB));
+                    return LRESULT(surface_brush().0 as isize);
                 }
                 SetTextColor(hdc, rgb(theme::TEXT_RGB));
                 SetBkColor(hdc, rgb(theme::CONTENT_BG_RGB));
