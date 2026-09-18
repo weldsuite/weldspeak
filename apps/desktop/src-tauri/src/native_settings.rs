@@ -15,24 +15,35 @@ pub const WINDOW_WIDTH: i32 = 980;
 pub const WINDOW_HEIGHT: i32 = 700;
 pub const WINDOW_MIN_WIDTH: i32 = 760;
 pub const WINDOW_MIN_HEIGHT: i32 = 540;
-pub const SIDEBAR_WIDTH: i32 = 200;
+pub const SIDEBAR_WIDTH: i32 = 212;
 
-/// Shared Hub palette (brand-aligned, light content + dark rail).
+/// Shared Hub + pill palette — cool mist content, slate rail, teal accent
+/// (aligned with the Wispr Flow–adjacent webview refresh; no cream/orange charcoal).
 pub mod theme {
-    /// Content background `#faf9f6`
-    pub const CONTENT_BG_RGB: (u8, u8, u8) = (0xfa, 0xf9, 0xf6);
-    /// Sidebar `#1c1f1d`
-    pub const SIDEBAR_BG_RGB: (u8, u8, u8) = (0x1c, 0x1f, 0x1d);
-    /// Selected nav chip `#2a2e2b`
-    pub const SIDEBAR_CHIP_RGB: (u8, u8, u8) = (0x2a, 0x2e, 0x2b);
-    /// Brand orange `#de713e`
-    pub const BRAND_RGB: (u8, u8, u8) = (0xde, 0x71, 0x3e);
-    /// Primary text `#242723`
-    pub const TEXT_RGB: (u8, u8, u8) = (0x24, 0x27, 0x23);
-    /// Muted text `#666d63`
-    pub const MUTED_RGB: (u8, u8, u8) = (0x66, 0x6d, 0x63);
-    /// Sidebar label `#f3f2ee`
-    pub const SIDEBAR_TEXT_RGB: (u8, u8, u8) = (0xf3, 0xf2, 0xee);
+    /// Content background `#f7f9fb`
+    pub const CONTENT_BG_RGB: (u8, u8, u8) = (0xf7, 0xf9, 0xfb);
+    /// Sidebar `#0f172a`
+    pub const SIDEBAR_BG_RGB: (u8, u8, u8) = (0x0f, 0x17, 0x2a);
+    /// Selected nav chip `#1e293b`
+    pub const SIDEBAR_CHIP_RGB: (u8, u8, u8) = (0x1e, 0x29, 0x3b);
+    /// Accent teal `#0f766e` (nav selection + Hub accent rail)
+    pub const BRAND_RGB: (u8, u8, u8) = (0x0f, 0x76, 0x6e);
+    /// Soft accent wash behind selected chip `#134e4a`
+    pub const SIDEBAR_CHIP_ACCENT_RGB: (u8, u8, u8) = (0x13, 0x4e, 0x4a);
+    /// Primary text `#0f172a`
+    pub const TEXT_RGB: (u8, u8, u8) = (0x0f, 0x17, 0x2a);
+    /// Muted text `#64748b`
+    pub const MUTED_RGB: (u8, u8, u8) = (0x64, 0x74, 0x8b);
+    /// Sidebar label `#f1f5f9`
+    pub const SIDEBAR_TEXT_RGB: (u8, u8, u8) = (0xf1, 0xf5, 0xf9);
+    /// Listening pill fill `#0f172a`
+    pub const OVERLAY_BG_RGB: (u8, u8, u8) = (0x0f, 0x17, 0x2a);
+    /// Listening waveform `#14b8a6`
+    pub const OVERLAY_LISTEN_RGB: (u8, u8, u8) = (0x14, 0xb8, 0xa6);
+    /// Thinking / muted bars `#94a3b8`
+    pub const OVERLAY_MUTED_RGB: (u8, u8, u8) = (0x94, 0xa3, 0xb8);
+    /// Notice text on pill `#f8fafc`
+    pub const OVERLAY_TEXT_RGB: (u8, u8, u8) = (0xf8, 0xfa, 0xfc);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

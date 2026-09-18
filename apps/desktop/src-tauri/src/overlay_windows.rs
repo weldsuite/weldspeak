@@ -1,5 +1,6 @@
 //! Win32 listening pill. No webview, click-through, never activates.
 
+use crate::native_settings::theme;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -7,8 +8,8 @@ use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint,
-    FillRect, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, SelectObject,
-    SetBkMode, SetTextColor, SetWindowRgn, TextOutW, BLACK_PEN, CLEARTYPE_QUALITY,
+    FillRect, FillRgn, GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint,
+    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TextOutW, BLACK_PEN, CLEARTYPE_QUALITY,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, FF_DONTCARE, FW_SEMIBOLD, HBRUSH, HDC,
     MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_TT_PRECIS, PAINTSTRUCT, TRANSPARENT,
 };
@@ -25,17 +26,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::{current_level, notice_lock, PHASE};
 
 static HWND_BITS: AtomicIsize = AtomicIsize::new(0);
-static SIZE: Mutex<(i32, i32)> = Mutex::new((88, 40));
+static SIZE: Mutex<(i32, i32)> = Mutex::new((104, 44));
 static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
 
-/// Capsule fill — near-black with a cool cast (BGR).
-const BG: COLORREF = COLORREF(0x0014_1210);
-/// Brand orange `#de713e` as COLORREF (BGR).
-const ACCENT: COLORREF = COLORREF(0x003E_71DE);
-/// Thinking / idle bar tone.
-const MUTED: COLORREF = COLORREF(0x007A_7672);
-/// Notice text.
-const TEXT: COLORREF = COLORREF(0x00F7_F5F5);
+fn rgb(c: (u8, u8, u8)) -> COLORREF {
+    COLORREF(u32::from(c.2) << 16 | u32::from(c.1) << 8 | u32::from(c.0))
+}
 
 fn module() -> HINSTANCE {
     unsafe { HINSTANCE(GetModuleHandleW(None).expect("module").0) }
@@ -64,19 +60,19 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             WS_POPUP,
             0,
             0,
-            88,
-            40,
+            104,
+            44,
             HWND::default(),
             windows::Win32::UI::WindowsAndMessaging::HMENU::default(),
             module(),
             None,
         )
         .expect("overlay window");
-        // WS_EX_LAYERED windows stay invisible until opacity/color-key is set.
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 245, LWA_ALPHA);
+        // Soft glass opacity — WS_EX_LAYERED needs an alpha before the pill shows.
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 232, LWA_ALPHA);
         HWND_BITS.store(window.0 as isize, Ordering::Relaxed);
         let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE));
-        round_region(window, 88, 40);
+        round_region(window, 104, 44);
     }
     Ok(())
 }
@@ -100,7 +96,7 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         return;
     }
     unsafe {
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 245, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 232, LWA_ALPHA);
         round_region(window, w, h);
         let _ = MoveWindow(window, x, y, w, h, true);
         let _ = SetWindowPos(
@@ -174,8 +170,8 @@ fn paint(window: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(window, &mut ps);
-        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((88, 40));
-        let bg = CreateSolidBrush(BG);
+        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((104, 44));
+        let bg = CreateSolidBrush(rgb(theme::OVERLAY_BG_RGB));
         let rect = RECT {
             left: 0,
             top: 0,
@@ -198,7 +194,7 @@ fn paint(window: HWND) {
 fn draw_notice(hdc: HDC, text: &str, h: i32) {
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, TEXT);
+        SetTextColor(hdc, rgb(theme::OVERLAY_TEXT_RGB));
         let font = CreateFontW(
             13,
             0,
@@ -240,16 +236,20 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
     let envelope = *env;
     drop(env);
 
-    let color = if thinking { MUTED } else { ACCENT };
+    let color = if thinking {
+        theme::OVERLAY_MUTED_RGB
+    } else {
+        theme::OVERLAY_LISTEN_RGB
+    };
     unsafe {
-        let brush = CreateSolidBrush(color);
+        let brush = CreateSolidBrush(rgb(color));
         let old_pen = SelectObject(hdc, GetStockObject(BLACK_PEN));
-        let gap = 4;
-        let bar_w = 3;
+        let gap = 5;
+        let bar_w = 4;
         let count = 5;
         let total = count * bar_w + (count - 1) * gap;
         let start_x = (w - total) / 2;
-        let max_h = (h as f32 - 14.0).max(12.0);
+        let max_h = (h as f32 - 16.0).max(14.0);
         for i in 0..count {
             let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
             let floor = if thinking { 0.18 } else { 0.14 };
@@ -257,13 +257,9 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
             let bh = (max_h * frac) as i32;
             let x = start_x + i * (bar_w + gap);
             let y = (h - bh) / 2;
-            let rect = RECT {
-                left: x,
-                top: y,
-                right: x + bar_w,
-                bottom: y + bh,
-            };
-            let _ = FillRect(hdc, &rect, brush);
+            let rgn = CreateRoundRectRgn(x, y, x + bar_w, y + bh.max(bar_w), bar_w, bar_w);
+            let _ = FillRgn(hdc, rgn, brush);
+            let _ = DeleteObject(rgn);
         }
         SelectObject(hdc, old_pen);
         let _ = DeleteObject(brush);

@@ -116,11 +116,51 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
             NSPoint::new(0.0, 0.0),
             NSSize::new(SIDEBAR_WIDTH as f64, WINDOW_HEIGHT as f64),
         ));
-        // Sidebar background tinting via CALayer would need the
-        // `objc2-quartz-core` crate/feature, which this crate does not
-        // depend on. Skip the layer tint; the window background already
-        // matches the content area.
         root.addSubview(&sidebar);
+    }
+
+    // Solid sidebar wash without CALayer / quartz-core: a full-bleed non-editable field.
+    let sidebar_wash = unsafe { NSTextField::new(mtm) };
+    let (sr, sg, sb) = theme::SIDEBAR_BG_RGB;
+    unsafe {
+        sidebar_wash.setEditable(false);
+        sidebar_wash.setBezeled(false);
+        sidebar_wash.setSelectable(false);
+        sidebar_wash.setDrawsBackground(true);
+        sidebar_wash.setStringValue(&NSString::from_str(""));
+        sidebar_wash.setBackgroundColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+            sr as f64 / 255.0,
+            sg as f64 / 255.0,
+            sb as f64 / 255.0,
+            1.0,
+        )));
+        sidebar_wash.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(SIDEBAR_WIDTH as f64, WINDOW_HEIGHT as f64),
+        ));
+        sidebar.addSubview(&sidebar_wash);
+    }
+
+    // Teal accent rail along the left edge of the sidebar.
+    let accent_rail = unsafe { NSTextField::new(mtm) };
+    let (ar, ag, ab) = theme::BRAND_RGB;
+    unsafe {
+        accent_rail.setEditable(false);
+        accent_rail.setBezeled(false);
+        accent_rail.setSelectable(false);
+        accent_rail.setDrawsBackground(true);
+        accent_rail.setStringValue(&NSString::from_str(""));
+        accent_rail.setBackgroundColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+            ar as f64 / 255.0,
+            ag as f64 / 255.0,
+            ab as f64 / 255.0,
+            1.0,
+        )));
+        accent_rail.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(3.0, WINDOW_HEIGHT as f64),
+        ));
+        sidebar.addSubview(&accent_rail);
     }
 
     let brand = unsafe { NSTextField::new(mtm) };
@@ -130,7 +170,7 @@ fn build(app: &AppHandle) -> Retained<NSWindow> {
         brand.setDrawsBackground(false);
         brand.setSelectable(false);
         brand.setStringValue(&NSString::from_str("WeldSpeak"));
-        brand.setFont(Some(&NSFont::boldSystemFontOfSize(16.0)));
+        brand.setFont(Some(&NSFont::boldSystemFontOfSize(17.0)));
         let (tr, tg, tb) = theme::SIDEBAR_TEXT_RGB;
         let brand_fg = NSColor::colorWithCalibratedRed_green_blue_alpha(
             tr as f64 / 255.0,
@@ -256,6 +296,13 @@ fn add_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f64, h: 
         label.setDrawsBackground(false);
         label.setSelectable(false);
         label.setFont(Some(&NSFont::systemFontOfSize(size)));
+        let (tr, tg, tb) = theme::TEXT_RGB;
+        label.setTextColor(Some(&NSColor::colorWithCalibratedRed_green_blue_alpha(
+            tr as f64 / 255.0,
+            tg as f64 / 255.0,
+            tb as f64 / 255.0,
+            1.0,
+        )));
         label.setStringValue(&NSString::from_str(text));
         label.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)));
         parent.addSubview(&label);

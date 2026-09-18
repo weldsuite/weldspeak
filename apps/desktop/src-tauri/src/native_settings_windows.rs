@@ -8,8 +8,8 @@ use tauri::{AppHandle, Manager};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, InvalidateRect, SetBkColor, SetBkMode, SetTextColor,
-    HBRUSH, HDC, TRANSPARENT,
+    CreateRoundRectRgn, CreateSolidBrush, DeleteObject, FillRect, FillRgn, InvalidateRect,
+    SetBkColor, SetBkMode, SetTextColor, HBRUSH, HDC, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -1443,7 +1443,7 @@ unsafe extern "system" fn wnd_proc(
                 let side = CreateSolidBrush(rgb(theme::SIDEBAR_BG_RGB));
                 let _ = FillRect(hdc, &sidebar, side);
 
-                // Accent bar + selected nav chip.
+                // Soft teal accent rail + rounded selected nav chip.
                 let accent = CreateSolidBrush(rgb(theme::BRAND_RGB));
                 let accent_bar = RECT {
                     left: 0,
@@ -1455,19 +1455,16 @@ unsafe extern "system" fn wnd_proc(
 
                 let page = Page::from_index(PAGE.load(Ordering::Relaxed));
                 let chip_y = 72 + (page.index() as i32) * 44;
-                let chip = RECT {
-                    left: 14,
-                    top: chip_y,
-                    right: SIDEBAR_WIDTH - 14,
-                    bottom: chip_y + 36,
-                };
-                let chip_brush = CreateSolidBrush(rgb(theme::SIDEBAR_CHIP_RGB));
-                let _ = FillRect(hdc, &chip, chip_brush);
+                let chip_brush = CreateSolidBrush(rgb(theme::SIDEBAR_CHIP_ACCENT_RGB));
+                let chip_rgn =
+                    CreateRoundRectRgn(12, chip_y, SIDEBAR_WIDTH - 12, chip_y + 36, 14, 14);
+                let _ = FillRgn(hdc, chip_rgn, chip_brush);
 
                 let _ = DeleteObject(brush);
                 let _ = DeleteObject(side);
                 let _ = DeleteObject(accent);
                 let _ = DeleteObject(chip_brush);
+                let _ = DeleteObject(chip_rgn);
             }
             LRESULT(1)
         }
@@ -1482,7 +1479,20 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 SetBkMode(hdc, TRANSPARENT);
                 if nav {
-                    SetTextColor(hdc, rgb(theme::SIDEBAR_TEXT_RGB));
+                    let page = Page::from_index(PAGE.load(Ordering::Relaxed));
+                    let selected = matches!(
+                        (id, page),
+                        (ID_NAV_HOME, Page::Home)
+                            | (ID_NAV_DICT, Page::Dictionary)
+                            | (ID_NAV_SNIP, Page::Snippets)
+                            | (ID_NAV_SET, Page::Settings)
+                    );
+                    let fg = if selected {
+                        theme::OVERLAY_LISTEN_RGB
+                    } else {
+                        theme::SIDEBAR_TEXT_RGB
+                    };
+                    SetTextColor(hdc, rgb(fg));
                     SetBkColor(hdc, rgb(theme::SIDEBAR_BG_RGB));
                     return LRESULT(sidebar_brush().0 as isize);
                 }

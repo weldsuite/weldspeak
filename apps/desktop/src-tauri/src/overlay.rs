@@ -11,8 +11,8 @@ use tauri::{AppHandle, Manager, PhysicalPosition};
 use crate::audio::Capture;
 use crate::AppState;
 
-const COMPACT_W: i32 = 88;
-const COMPACT_H: i32 = 40;
+const COMPACT_W: i32 = 104;
+const COMPACT_H: i32 = 44;
 
 /// 0 idle (hidden), 1 listening, 2 thinking, 3 notice.
 static PHASE: AtomicU8 = AtomicU8::new(0);
