@@ -17,7 +17,9 @@ type Phase = "idle" | "listening" | "thinking" | "notice";
 export function mountOverlay(root: HTMLElement): void {
   root.innerHTML = `
     <div class="pill" data-phase="idle">
-      <span class="indicator" aria-hidden="true"></span>
+      <span class="wave" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </span>
       <span class="text" role="status" aria-live="polite"></span>
     </div>
   `;
@@ -30,16 +32,26 @@ export function mountOverlay(root: HTMLElement): void {
     text.textContent = message;
   };
 
-  void listen<string>("weldspeak://listening", () => set("listening", "Listening…"));
+  void listen<string>("weldspeak://listening", () => set("listening", "Listening…")).catch(() => {
+    // Preview / non-Tauri: leave idle until manually exercised.
+  });
 
   void listen<string>("weldspeak://partial", (event) => {
     // Only the tail fits, and the tail is what the user just said — the part
     // they are checking was heard correctly.
     const words = event.payload.split(/\s+/);
     set("listening", words.slice(-12).join(" "));
-  });
+  }).catch(() => undefined);
 
-  void listen("weldspeak://thinking", () => set("thinking", "Tidying up…"));
-  void listen("weldspeak://done", () => set("idle", ""));
-  void listen<string>("weldspeak://notice", (event) => set("notice", event.payload));
+  void listen("weldspeak://thinking", () => set("thinking", "Tidying up…")).catch(() => undefined);
+  void listen("weldspeak://done", () => set("idle", "")).catch(() => undefined);
+  void listen<string>("weldspeak://notice", (event) => set("notice", event.payload)).catch(() => undefined);
+
+  // Browser/Vite preview: cycle a short demo so the pill can be visually reviewed.
+  if (!("__TAURI_INTERNALS__" in window) && new URLSearchParams(location.search).has("demo")) {
+    set("listening", "Listening…");
+    window.setTimeout(() => set("listening", "hold the key and speak clearly"), 900);
+    window.setTimeout(() => set("thinking", "Tidying up…"), 2400);
+    window.setTimeout(() => set("idle", ""), 3600);
+  }
 }
