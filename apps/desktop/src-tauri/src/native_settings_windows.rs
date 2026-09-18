@@ -954,6 +954,7 @@ fn set_cue(hwnd: HWND, text: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_listview(
     parent: HWND,
     id: i32,

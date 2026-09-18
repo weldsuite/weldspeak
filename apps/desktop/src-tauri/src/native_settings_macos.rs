@@ -296,6 +296,7 @@ fn add_muted_label(parent: &NSView, text: &str, size: f64, x: f64, y: f64, w: f6
     add_colored_label(parent, text, size, x, y, w, h, theme::MUTED_RGB, false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_colored_label(
     parent: &NSView,
     text: &str,
