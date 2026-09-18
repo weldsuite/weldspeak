@@ -40,6 +40,21 @@ apps/web                  Dashboard: sign-in, device approval, team, glossary
 apps/desktop              Tauri client: tray, hotkey, microphone, injection
 ```
 
+### Shipped desktop vs `main` (read this before UI work)
+
+Two desktop tracks exist. Mixing them up is how “merged UI refresh” demos fail to
+show up in the installed app.
+
+| Track | Branch | What the user sees | How it ships |
+| --- | --- | --- | --- |
+| **Installed app** | `ci/desktop` | Native Hub + listening pill (Win32 / AppKit). No settings webview. | **Desktop installers** workflow → rolling GitHub release tag `desktop` (`latest.json`). Auto-update reads that release. |
+| **Webview shell on `main`** | `main` | Vite/Tauri settings window + overlay HTML (`apps/desktop/src/*.ts`, `styles.css`) | Local `pnpm --filter @weldspeak/desktop-ui dev` / `tauri dev` only. Main CI does **not** publish installers. |
+
+Merging CSS/HTML changes to `main` (e.g. a visual refresh of `settings.ts`) does
+**not** change what a downloaded DMG/EXE shows. To change the product Gert runs,
+restyle the native Hub/overlay on `ci/desktop` and push that branch (or cut a
+`v*` tag) so a newer `0.1.x` lands on the `desktop` release.
+
 ## Setup
 
 Needs Node 22+, pnpm 10+, and Rust stable. Building the desktop app also needs
@@ -180,6 +195,10 @@ and should be treated as unverified:
   fresh macOS user account, not one where you have already clicked allow.
 
 ## Shipping
+
+Installers are built from **`ci/desktop`**, not from a green main CI run. See
+[Shipped desktop vs `main`](#shipped-desktop-vs-main-read-this-before-ui-work)
+above. The rolling updater endpoint is the `desktop` release’s `latest.json`.
 
 Distribution needs an Apple Developer account (notarization) and a Windows
 code-signing certificate. Both have procurement lead time — start them early,
