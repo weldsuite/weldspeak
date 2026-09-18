@@ -35,7 +35,7 @@ fn panel() -> Option<Retained<NSPanel>> {
 
 pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     let mtm = mtm();
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(88.0, 40.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(104.0, 44.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel = unsafe {
         NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -60,8 +60,15 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     panel.setHasShadow(true);
     panel.setIgnoresMouseEvents(true);
     panel.setLevel(3); // NSFloatingWindowLevel
-    let panel_bg =
-        unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.063, 0.071, 0.078, 0.96) };
+    let (br, bg, bb) = crate::native_settings::theme::OVERLAY_BG_RGB;
+    let panel_bg = unsafe {
+        NSColor::colorWithCalibratedRed_green_blue_alpha(
+            br as f64 / 255.0,
+            bg as f64 / 255.0,
+            bb as f64 / 255.0,
+            0.90,
+        )
+    };
     panel.setBackgroundColor(Some(&panel_bg));
 
     let content = panel.contentView().expect("content view");
@@ -72,10 +79,19 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         label.setDrawsBackground(false);
         label.setSelectable(false);
         label.setAlignment(NSTextAlignment::Center);
-        let label_fg = NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0);
+        let (lr, lg, lb) = crate::native_settings::theme::OVERLAY_LISTEN_RGB;
+        let label_fg = NSColor::colorWithCalibratedRed_green_blue_alpha(
+            lr as f64 / 255.0,
+            lg as f64 / 255.0,
+            lb as f64 / 255.0,
+            1.0,
+        );
         label.setTextColor(Some(&label_fg));
-        label.setFont(Some(&NSFont::boldSystemFontOfSize(14.0)));
-        label.setFrame(NSRect::new(NSPoint::new(8.0, 8.0), NSSize::new(72.0, 24.0)));
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(15.0)));
+        label.setFrame(NSRect::new(
+            NSPoint::new(10.0, 10.0),
+            NSSize::new(84.0, 24.0),
+        ));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);
     }
@@ -139,9 +155,25 @@ fn update_label(app: Option<&AppHandle>) {
             (String::new(), true)
         };
         let color = if orange {
-            unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.871, 0.443, 0.243, 1.0) }
+            let (r, g, b) = crate::native_settings::theme::OVERLAY_LISTEN_RGB;
+            unsafe {
+                NSColor::colorWithCalibratedRed_green_blue_alpha(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    1.0,
+                )
+            }
         } else {
-            unsafe { NSColor::colorWithCalibratedRed_green_blue_alpha(0.96, 0.96, 0.96, 1.0) }
+            let (r, g, b) = crate::native_settings::theme::OVERLAY_TEXT_RGB;
+            unsafe {
+                NSColor::colorWithCalibratedRed_green_blue_alpha(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    1.0,
+                )
+            }
         };
         unsafe {
             label.setTextColor(Some(&color));
