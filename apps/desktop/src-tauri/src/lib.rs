@@ -166,6 +166,7 @@ pub fn run() {
             commands::copy_text,
             commands::poll_held_hotkey,
             commands::open_external_url,
+            updater::check_for_update,
             updater::install_update,
         ])
         .on_window_event(|window, event| {

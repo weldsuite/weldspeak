@@ -133,6 +133,28 @@ Unsigned Windows builds will trip SmartScreen until a code-signing certificate
 is in the workflow. That is expected for a first personal install: More info →
 Run anyway.
 
+### In-app updates
+
+Installed apps read
+`https://github.com/weldsuite/weldspeak/releases/download/desktop/latest.json`
+(Tauri updater). On launch the desktop process checks quietly and installs when
+a newer signed build is present. The Hub also probes the same feed and shows an
+**Update** control when a newer version is available; clicking it runs the same
+download → install → restart path.
+
+Repo secrets required for updater artifacts (set in GitHub → Settings →
+Secrets):
+
+| Secret | Purpose |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | Minisign private key; enables `--config bundle.createUpdaterArtifacts` in Desktop installers |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key (omit if the key is unencrypted) |
+
+The matching **public** key is committed in
+`apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater.pubkey`. Without the
+private key, CI still builds installers but skips `.sig` / updater tarballs and
+cannot refresh `latest.json`.
+
 ## Production
 
 Deployed to the `WeldSuite` Cloudflare account as the Worker `weldspeak-api`,
