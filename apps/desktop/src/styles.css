@@ -234,8 +234,8 @@ body::before {
 
 .rail-update {
   align-self: flex-start;
-  padding: 7px 12px;
-  border-radius: 999px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid rgba(45, 212, 191, 0.35);
   background: linear-gradient(180deg, rgba(15, 118, 110, 0.55), rgba(15, 118, 110, 0.28));
   color: #ecfdf5;
@@ -257,15 +257,15 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin: 0 0 18px;
-  padding: 14px 16px;
+  gap: 14px;
+  margin: 0 0 12px;
+  padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: var(--radius-sm);
   background:
     linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(255, 255, 255, 0.55)),
     var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   animation: rise-in 380ms var(--ease-out) both;
 }
 
