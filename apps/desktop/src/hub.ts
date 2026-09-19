@@ -302,36 +302,45 @@ function pageContent(): string {
 
 function homePage(): string {
   const key = settings.hotkey.accelerator || "your key";
+  const pretty = escapeHtml(prettyKey(key));
   const statusLine = status.signedIn
-    ? `${formatWords(settings.wordsDictated)} words · Hold ${escapeHtml(prettyKey(key))} to talk`
-    : `Hold ${escapeHtml(prettyKey(key))} to talk · Sign in to sync history`;
+    ? `<span class="status-metric">${formatWords(settings.wordsDictated)} words</span>
+       <span class="status-sep" aria-hidden="true">·</span>
+       <span class="status-hint">Hold ${pretty} to talk</span>`
+    : `<span class="status-hint">Hold ${pretty} to talk</span>
+       <span class="status-sep" aria-hidden="true">·</span>
+       <span class="status-metric">Sign in to sync history</span>`;
 
   return `
-    <header class="stage-head">
-      <div>
-        <h1>Home</h1>
-        <p class="stage-sub">${statusLine}</p>
-      </div>
-      ${
-        status.signedIn
-          ? ""
-          : `<button type="button" class="primary" data-action="sign-in">Sign in</button>`
-      }
-    </header>
-    <section class="history-sheet" aria-label="Recent dictations">
-      ${
-        !status.signedIn
-          ? `<div class="empty">
-              <p>Sign in to keep recent dictations across devices.</p>
-              <button type="button" class="primary" data-action="sign-in">Sign in</button>
-            </div>`
-          : transcripts.length === 0
-            ? `<div class="empty"><p>No dictations yet. Hold your key and speak.</p></div>`
-            : `<ul class="history-list">
-                ${transcripts.map((row) => historyRow(row)).join("")}
-              </ul>`
-      }
-    </section>
+    <div class="stage-surface">
+      <header class="stage-head">
+        <div class="stage-head-copy">
+          <h1>Home</h1>
+          <p class="stage-sub">${statusLine}</p>
+        </div>
+        <div class="stage-head-actions">
+          ${
+            status.signedIn
+              ? ""
+              : `<button type="button" class="primary" data-action="sign-in">Sign in</button>`
+          }
+        </div>
+      </header>
+      <section class="stage-body history-sheet" aria-label="Recent dictations">
+        ${
+          !status.signedIn
+            ? `<div class="empty">
+                <p>Sign in to keep recent dictations across devices.</p>
+                <button type="button" class="primary" data-action="sign-in">Sign in</button>
+              </div>`
+            : transcripts.length === 0
+              ? `<div class="empty"><p>No dictations yet. Hold your key and speak.</p></div>`
+              : `<ul class="history-list">
+                  ${transcripts.map((row) => historyRow(row)).join("")}
+                </ul>`
+        }
+      </section>
+    </div>
   `;
 }
 
@@ -354,84 +363,94 @@ function historyRow(row: Transcript): string {
 
 function dictionaryPage(): string {
   return `
-    <header class="stage-head">
-      <div>
-        <h1>Dictionary</h1>
-        <p class="stage-sub">Names and terms the recognizer should get right.</p>
-      </div>
-    </header>
-    ${
-      !status.signedIn
-        ? signedOutGate("Sign in to manage your glossary.")
-        : `
-      <form class="composer" id="dict-form">
-        <input name="term" placeholder="Term" required autocomplete="off" />
-        <input name="sounds" placeholder="Sounds like (optional)" autocomplete="off" />
-        <button type="submit" class="primary">Add</button>
-      </form>
-      <section class="list-sheet">
+    <div class="stage-surface">
+      <header class="stage-head">
+        <div class="stage-head-copy">
+          <h1>Dictionary</h1>
+          <p class="stage-sub">Names and terms the recognizer should get right.</p>
+        </div>
+        <div class="stage-head-actions"></div>
+      </header>
+      <div class="stage-body">
         ${
-          dictionary.length === 0
-            ? `<div class="empty"><p>No terms yet.</p></div>`
-            : `<ul class="plain-list">
-                ${dictionary
-                  .map(
-                    (term) => `
-                  <li>
-                    <div>
-                      <strong>${escapeHtml(term.term)}</strong>
-                      ${
-                        term.soundsLike
-                          ? `<span class="muted"> · ${escapeHtml(term.soundsLike)}</span>`
-                          : ""
-                      }
-                      <div class="tiny muted">${escapeHtml(term.scope)}</div>
-                    </div>
-                    <button type="button" class="ghost danger" data-del-term="${escapeAttr(term.id)}">Delete</button>
-                  </li>`,
-                  )
-                  .join("")}
-              </ul>`
+          !status.signedIn
+            ? signedOutGate("Sign in to manage your glossary.")
+            : `
+          <form class="composer" id="dict-form">
+            <input name="term" placeholder="Term" required autocomplete="off" />
+            <input name="sounds" placeholder="Sounds like (optional)" autocomplete="off" />
+            <button type="submit" class="primary">Add</button>
+          </form>
+          <section class="list-sheet">
+            ${
+              dictionary.length === 0
+                ? `<div class="empty"><p>No terms yet.</p></div>`
+                : `<ul class="plain-list">
+                    ${dictionary
+                      .map(
+                        (term) => `
+                      <li>
+                        <div>
+                          <strong>${escapeHtml(term.term)}</strong>
+                          ${
+                            term.soundsLike
+                              ? `<span class="muted"> · ${escapeHtml(term.soundsLike)}</span>`
+                              : ""
+                          }
+                          <div class="tiny muted">${escapeHtml(term.scope)}</div>
+                        </div>
+                        <button type="button" class="ghost danger" data-del-term="${escapeAttr(term.id)}">Delete</button>
+                      </li>`,
+                      )
+                      .join("")}
+                  </ul>`
+            }
+          </section>`
         }
-      </section>`
-    }
+      </div>
+    </div>
   `;
 }
 
 function snippetsPage(): string {
   const snippets = settings.snippets ?? [];
   return `
-    <header class="stage-head">
-      <div>
-        <h1>Snippets</h1>
-        <p class="stage-sub">Say a cue; WeldSpeak inserts the saved text.</p>
+    <div class="stage-surface">
+      <header class="stage-head">
+        <div class="stage-head-copy">
+          <h1>Snippets</h1>
+          <p class="stage-sub">Say a cue; WeldSpeak inserts the saved text.</p>
+        </div>
+        <div class="stage-head-actions"></div>
+      </header>
+      <div class="stage-body">
+        <form class="composer" id="snip-form">
+          <input name="trigger" placeholder="Cue, e.g. my address" required autocomplete="off" />
+          <input name="expansion" placeholder="Text to insert" required autocomplete="off" />
+          <button type="submit" class="primary">Add</button>
+        </form>
+        <section class="list-sheet">
+          ${
+            snippets.length === 0
+              ? `<div class="empty"><p>No snippets yet.</p></div>`
+              : `<ul class="plain-list">
+                  ${snippets
+                    .map(
+                      (snip, index) => `
+                    <li>
+                      <div>
+                        <strong>${escapeHtml(snip.trigger)}</strong>
+                        <div class="muted snip-exp">${escapeHtml(snip.expansion)}</div>
+                      </div>
+                      <button type="button" class="ghost danger" data-del-snip="${index}">Delete</button>
+                    </li>`,
+                    )
+                    .join("")}
+                </ul>`
+          }
+        </section>
       </div>
-    </header>
-    <form class="composer" id="snip-form">
-      <input name="trigger" placeholder="Cue, e.g. my address" required autocomplete="off" />
-      <input name="expansion" placeholder="Text to insert" required autocomplete="off" />
-      <button type="submit" class="primary">Add</button>
-    </form>
-    <section class="list-sheet">
-      ${
-        snippets.length === 0
-          ? `<div class="empty"><p>No snippets yet.</p></div>`
-          : `<ul class="plain-list">
-              ${snippets
-                .map(
-                  (snip, index) => `
-                <li>
-                  <div>
-                    <strong>${escapeHtml(snip.trigger)}</strong>
-                    <div class="muted snip-exp">${escapeHtml(snip.expansion)}</div>
-                  </div>
-                  <button type="button" class="ghost danger" data-del-snip="${index}">Delete</button>
-                </li>`,
-                )
-                .join("")}
-            </ul>`
-      }
-    </section>
+    </div>
   `;
 }
 
@@ -467,13 +486,15 @@ function settingsPage(): string {
           .join("");
 
   return `
-    <header class="stage-head">
-      <div>
-        <h1>Settings</h1>
-        <p class="stage-sub">Account, dictation key, and how text is inserted.</p>
-      </div>
-    </header>
-    <div class="settings-stack">
+    <div class="stage-surface">
+      <header class="stage-head">
+        <div class="stage-head-copy">
+          <h1>Settings</h1>
+          <p class="stage-sub">Account, dictation key, and how text is inserted.</p>
+        </div>
+        <div class="stage-head-actions"></div>
+      </header>
+      <div class="stage-body settings-stack">
       ${status.canInject ? "" : accessibilityWarning()}
       <section class="panel">
         <h2 class="panel-title">Account</h2>
@@ -570,6 +591,7 @@ function settingsPage(): string {
           <p class="tiny muted" style="margin:12px 0 0">WeldSpeak · ${formatWords(settings.wordsDictated)} words dictated</p>
         </div>
       </section>
+      </div>
     </div>
   `;
 }
