@@ -377,7 +377,11 @@ mod tests {
         let peak = 0.05;
         let boosted = apply_makeup_gain(&quiet, peak);
         let out_peak = boosted.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(out_peak > 0.2, "expected make-up gain, got peak {out_peak}");
+        // Cap is 4×, so 0.05 → 0.20; still clearly louder than the input.
+        assert!(
+            out_peak >= 0.19,
+            "expected make-up gain, got peak {out_peak}"
+        );
     }
 
     #[test]
