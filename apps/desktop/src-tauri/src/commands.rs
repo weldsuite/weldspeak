@@ -450,3 +450,27 @@ pub async fn delete_transcript(app: AppHandle, id: String) -> Result<(), String>
     .await
     .map_err(|error| error.to_string())
 }
+
+/// Copy arbitrary text (Hub history rows) to the clipboard.
+#[tauri::command]
+pub fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Nothing to copy.".into());
+    }
+    inject::copy_to_clipboard(trimmed).map_err(|error| error.to_string())?;
+    crate::overlay::show_notice(&app, "Copied");
+    Ok(())
+}
+
+/// First currently held bindable key — used by Hub “Hold a key…” capture.
+#[tauri::command]
+pub fn poll_held_hotkey() -> Option<String> {
+    hotkey::first_held_code()
+}
+
+/// Open a URL in the system browser (dashboard, docs).
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    open_in_browser(&url)
+}

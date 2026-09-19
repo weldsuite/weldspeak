@@ -4,13 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "echo native-desktop",
-    "typecheck": "echo native-desktop",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview --port 1420 --strictPort",
     "test": "echo 'no tests'",
     "tauri": "tauri"
   },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-opener": "^2.2.5"
+  },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0"
+    "@tauri-apps/cli": "^2.1.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0"
   }
 }

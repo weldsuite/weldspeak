@@ -1,9 +1,9 @@
 //! WeldSpeak desktop client.
 //!
-//! A full desktop app with a Hub window (history, dictionary, snippets,
-//! settings) plus a tray icon and push-to-talk overlay. Hold the hotkey,
-//! speak, release — text appears wherever you were typing. Closing the Hub
-//! hides it to the tray; Quit ends the process.
+//! A full desktop app with a Hub **webview** (history, dictionary, snippets,
+//! settings), a tray icon, and a native push-to-talk listening pill. Hold the
+//! hotkey, speak, release — text appears wherever you were typing. Closing the
+//! Hub hides it to the tray; Quit ends the process.
 //!
 //! The portable logic — audio conditioning, the session state machine,
 //! injection policy, token lifetime — lives in `weldspeak-core`, where it is
@@ -163,8 +163,20 @@ pub fn run() {
             commands::copy_last_transcript,
             commands::list_transcripts,
             commands::delete_transcript,
+            commands::copy_text,
+            commands::poll_held_hotkey,
+            commands::open_external_url,
             updater::install_update,
         ])
+        .on_window_event(|window, event| {
+            // Closing the Hub hides to the tray; Quit from the tray exits.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "hub" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             // Regular app: dock/taskbar presence like other desktop dictation
             // clients. The tray remains for when the Hub is closed.
@@ -342,7 +354,10 @@ fn build_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 }
 
 fn show_settings(app: &AppHandle) {
-    native_settings::show(app);
+    if let Some(window) = app.get_webview_window("hub") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// Point capture at the microphone currently in settings.
