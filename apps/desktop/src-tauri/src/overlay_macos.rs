@@ -8,13 +8,11 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::Mutex;
 use tauri::AppHandle;
 
-use super::{current_level, notice_lock, PHASE};
+use super::{notice_lock, sample_bars, PHASE};
 
 static PANEL_PTR: AtomicIsize = AtomicIsize::new(0);
-static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
 
 fn mtm() -> MainThreadMarker {
     // `MainThreadMarker::new()` requires the `NSThread` feature, which this
@@ -35,7 +33,7 @@ fn panel() -> Option<Retained<NSPanel>> {
 
 pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     let mtm = mtm();
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(52.0, 22.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(84.0, 22.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel = unsafe {
         NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -87,8 +85,8 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             1.0,
         );
         label.setTextColor(Some(&label_fg));
-        label.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
-        label.setFrame(NSRect::new(NSPoint::new(6.0, 3.0), NSSize::new(40.0, 16.0)));
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
+        label.setFrame(NSRect::new(NSPoint::new(8.0, 2.0), NSSize::new(68.0, 18.0)));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);
     }
@@ -103,13 +101,13 @@ thread_local! {
     static LABEL: RefCell<Option<Retained<NSTextField>>> = const { RefCell::new(None) };
 }
 
-fn waveform_glyphs(envelope: f32, thinking: bool) -> String {
-    const STEPS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    (0..5)
-        .map(|i| {
-            let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
-            let floor = if thinking { 0.18 } else { 0.14 };
-            let frac = (floor + envelope * wobble).clamp(floor, 1.0);
+fn waveform_glyphs(heights: &[f32], thinking: bool) -> String {
+    // Twelve steps (was eight) so smoothed bar heights don't quantize as hard.
+    const STEPS: [&str; 12] = ["▁", "▂", "▂", "▃", "▄", "▄", "▅", "▆", "▆", "▇", "▇", "█"];
+    let _ = thinking;
+    heights
+        .iter()
+        .map(|&frac| {
             let idx = ((frac * (STEPS.len() - 1) as f32).round() as usize).min(STEPS.len() - 1);
             STEPS[idx]
         })
@@ -131,23 +129,12 @@ fn update_label(app: Option<&AppHandle>) {
             )
         } else if phase == 1 || phase == 2 {
             let thinking = phase == 2;
-            let envelope = if let Some(app) = app {
-                let raw = current_level(app);
-                let db = 20.0 * (raw.max(1e-5)).log10();
-                let voice = ((db + 48.0) / 40.0).clamp(0.0, 1.0);
-                let mut env = BAR_ENV.lock().unwrap_or_else(|e| e.into_inner());
-                *env = if voice > *env {
-                    voice
-                } else {
-                    *env * 0.72 + voice * 0.28
-                };
-                let v = *env;
-                drop(env);
-                v
+            let heights = if let Some(app) = app {
+                sample_bars(app, thinking)
             } else {
-                0.2
+                [0.2; super::BAR_COUNT]
             };
-            (waveform_glyphs(envelope, thinking), !thinking)
+            (waveform_glyphs(&heights, thinking), !thinking)
         } else {
             (String::new(), true)
         };
@@ -198,8 +185,8 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         if let Some(label) = slot.borrow().as_ref() {
             unsafe {
                 label.setFrame(NSRect::new(
-                    NSPoint::new(6.0, 3.0),
-                    NSSize::new((w as f64) - 12.0, (h as f64) - 6.0),
+                    NSPoint::new(8.0, 2.0),
+                    NSSize::new((w as f64) - 16.0, (h as f64) - 4.0),
                 ));
             }
         }
