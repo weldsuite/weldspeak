@@ -73,7 +73,7 @@ jobs:
             console.log(c.version);
           "
 
-      # Native tray app (no webview bundle).
+      # Hub webview assets (Vite) + native pill/tray.
       - run: pnpm --filter @weldspeak/desktop-ui build
       # `exec` runs the CLI directly so `--bundles` is not swallowed by pnpm
       # or forwarded to cargo (which is what `tauri build -- --bundles` does).

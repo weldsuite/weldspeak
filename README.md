@@ -36,7 +36,7 @@ packages/protocol-rs      The same protocol, for Rust
 packages/dictation-core   Portable client logic: audio, session, injection policy
 workers/api               Cloudflare Worker: auth, dictation relay, org data
 apps/web                  Dashboard: sign-in, device approval, team, glossary
-apps/desktop              Native tray client: Win32/AppKit hub, overlay, hotkey, injection
+apps/desktop              Hub webview + native tray, listening pill, hotkey, injection
 ```
 
 ## Setup
@@ -98,15 +98,24 @@ Checkout lives at `/pricing`.
 
 ### 3. Run it
 
-The desktop app is a native tray utility (Win32 / AppKit — no webview).
-Open WeldSpeak from the tray for History, Dictionary, Snippets, and Settings.
-Hold the hotkey, speak, release, and the text appears wherever you were typing.
+The desktop Hub is a Tauri **webview** (Home, Dictionary, Snippets, Settings).
+Dictation, hotkeys, injection, and the compact listening pill stay native.
+Open WeldSpeak from the tray; hold the hotkey, speak, release, and the text
+appears wherever you were typing.
 
 ```bash
 pnpm --filter @weldspeak/web dev     # dashboard on :5173
 pnpm --filter @weldspeak/api dev     # Worker on :8787
+# Hub UI only (browser preview, no tray/dictation):
+pnpm --filter @weldspeak/desktop-ui dev
+# Full desktop app (needs Tauri prerequisites):
 pnpm --filter @weldspeak/desktop-ui tauri dev
 ```
+
+**Installed builds ship from `ci/desktop` only.** Merging Hub CSS to `main`
+does not update Gert’s DMG/EXE. After this lands on `ci/desktop`, run
+**Actions → Desktop installers** (or push `ci/desktop`) so a newer `0.1.x`
+lands on the rolling `desktop` release / `latest.json`, then relaunch.
 
 The desktop app talks to `https://weldspeak.com` by default. For a local
 Worker, point `apiBase` at `http://localhost:8787` in

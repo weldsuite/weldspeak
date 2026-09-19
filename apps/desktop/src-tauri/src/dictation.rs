@@ -131,7 +131,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 let text = crate::learn::apply(&text, &corrections);
                 remember_transcript(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
-                crate::native_settings::on_history_changed();
+                crate::native_settings::on_history_changed(app);
 
                 // The injector reports completion by driving the machine on;
                 // without this the session would never return to idle.

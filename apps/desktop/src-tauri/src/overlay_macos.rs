@@ -88,10 +88,7 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         );
         label.setTextColor(Some(&label_fg));
         label.setFont(Some(&NSFont::boldSystemFontOfSize(12.0)));
-        label.setFrame(NSRect::new(
-            NSPoint::new(8.0, 5.0),
-            NSSize::new(56.0, 20.0),
-        ));
+        label.setFrame(NSRect::new(NSPoint::new(8.0, 5.0), NSSize::new(56.0, 20.0)));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);
     }
