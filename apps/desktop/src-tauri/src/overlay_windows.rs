@@ -23,11 +23,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_POPUP,
 };
 
-use super::{current_level, notice_lock, PHASE};
+use super::{notice_lock, sample_bars, BAR_COUNT, PHASE};
 
 static HWND_BITS: AtomicIsize = AtomicIsize::new(0);
-static SIZE: Mutex<(i32, i32)> = Mutex::new((52, 22));
-static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
+static SIZE: Mutex<(i32, i32)> = Mutex::new((84, 22));
 
 fn rgb(c: (u8, u8, u8)) -> COLORREF {
     COLORREF(u32::from(c.2) << 16 | u32::from(c.1) << 8 | u32::from(c.0))
@@ -60,7 +59,7 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             WS_POPUP,
             0,
             0,
-            52,
+            84,
             22,
             HWND::default(),
             windows::Win32::UI::WindowsAndMessaging::HMENU::default(),
@@ -72,7 +71,7 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         let _ = SetLayeredWindowAttributes(window, COLORREF(0), 236, LWA_ALPHA);
         HWND_BITS.store(window.0 as isize, Ordering::Relaxed);
         let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE));
-        round_region(window, 52, 22);
+        round_region(window, 84, 22);
     }
     Ok(())
 }
@@ -170,7 +169,7 @@ fn paint(window: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(window, &mut ps);
-        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((52, 22));
+        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((84, 22));
         let bg = CreateSolidBrush(rgb(theme::OVERLAY_BG_RGB));
         let rect = RECT {
             left: 0,
@@ -224,17 +223,7 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
         Some(app) => app,
         None => return,
     };
-    let raw = current_level(app);
-    let db = 20.0 * (raw.max(1e-5)).log10();
-    let voice = ((db + 48.0) / 40.0).clamp(0.0, 1.0);
-    let mut env = BAR_ENV.lock().unwrap_or_else(|e| e.into_inner());
-    *env = if voice > *env {
-        voice
-    } else {
-        *env * 0.72 + voice * 0.28
-    };
-    let envelope = *env;
-    drop(env);
+    let heights = sample_bars(app, thinking);
 
     let color = if thinking {
         theme::OVERLAY_MUTED_RGB
@@ -244,18 +233,15 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
     unsafe {
         let brush = CreateSolidBrush(rgb(color));
         let old_pen = SelectObject(hdc, GetStockObject(BLACK_PEN));
-        let gap = 2;
+        let gap = 3;
         let bar_w = 2;
-        let count = 5;
+        let count = BAR_COUNT as i32;
         let total = count * bar_w + (count - 1) * gap;
         let start_x = (w - total) / 2;
         let max_h = (h as f32 - 8.0).max(8.0);
-        for i in 0..count {
-            let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
-            let floor = if thinking { 0.18 } else { 0.14 };
-            let frac = (floor + envelope * wobble).clamp(floor, 1.0);
-            let bh = (max_h * frac) as i32;
-            let x = start_x + i * (bar_w + gap);
+        for (i, frac) in heights.iter().enumerate() {
+            let bh = (max_h * frac).round() as i32;
+            let x = start_x + i as i32 * (bar_w + gap);
             let y = (h - bh) / 2;
             let rgn = CreateRoundRectRgn(x, y, x + bar_w, y + bh.max(bar_w), bar_w, bar_w);
             let _ = FillRgn(hdc, rgn, brush);
