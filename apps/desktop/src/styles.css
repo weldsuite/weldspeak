@@ -223,10 +223,72 @@ body::before {
 }
 
 .rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 0 10px;
   color: var(--rail-muted);
   font-size: 0.75rem;
   font-weight: 500;
+}
+
+.rail-update {
+  align-self: flex-start;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  background: linear-gradient(180deg, rgba(15, 118, 110, 0.55), rgba(15, 118, 110, 0.28));
+  color: #ecfdf5;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  box-shadow: none;
+}
+
+.rail-update:hover {
+  filter: brightness(1.08);
+  border-color: rgba(45, 212, 191, 0.55);
+  transform: none;
+}
+
+/* --- Update banner (below chrome, above page) ---------------------------- */
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(255, 255, 255, 0.55)),
+    var(--surface);
+  box-shadow: var(--shadow-sm);
+  animation: rise-in 380ms var(--ease-out) both;
+}
+
+.update-banner strong {
+  display: block;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.update-banner p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  max-width: 48ch;
+}
+
+.update-banner.is-busy {
+  opacity: 0.92;
+}
+
+.update-banner .primary {
+  flex: none;
 }
 
 /* --- Stage / content ----------------------------------------------------- */
