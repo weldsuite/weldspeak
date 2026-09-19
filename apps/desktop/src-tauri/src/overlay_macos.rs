@@ -35,7 +35,7 @@ fn panel() -> Option<Retained<NSPanel>> {
 
 pub fn create(_app: &AppHandle) -> tauri::Result<()> {
     let mtm = mtm();
-    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(72.0, 30.0));
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(52.0, 22.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     let panel = unsafe {
         NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -87,8 +87,8 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             1.0,
         );
         label.setTextColor(Some(&label_fg));
-        label.setFont(Some(&NSFont::boldSystemFontOfSize(12.0)));
-        label.setFrame(NSRect::new(NSPoint::new(8.0, 5.0), NSSize::new(56.0, 20.0)));
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(10.0)));
+        label.setFrame(NSRect::new(NSPoint::new(6.0, 3.0), NSSize::new(40.0, 16.0)));
         label.setStringValue(&NSString::from_str(""));
         content.addSubview(&label);
     }
@@ -114,7 +114,7 @@ fn waveform_glyphs(envelope: f32, thinking: bool) -> String {
             STEPS[idx]
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("")
 }
 
 fn update_label(app: Option<&AppHandle>) {
@@ -198,8 +198,8 @@ pub fn show(app: &AppHandle, w: i32, h: i32) {
         if let Some(label) = slot.borrow().as_ref() {
             unsafe {
                 label.setFrame(NSRect::new(
-                    NSPoint::new(10.0, 8.0),
-                    NSSize::new((w as f64) - 20.0, 24.0),
+                    NSPoint::new(6.0, 3.0),
+                    NSSize::new((w as f64) - 12.0, (h as f64) - 6.0),
                 ));
             }
         }

@@ -28,8 +28,9 @@ pub const FRAME_BYTES: usize = FRAME_SAMPLES * BYTES_PER_SAMPLE * CHANNELS as us
 ///
 /// People start speaking fractionally before the key is fully down, so the
 /// capture thread keeps a rolling buffer and prepends it. Without this the
-/// first phoneme is clipped and the model guesses at it.
-pub const PREROLL_MS: u32 = 300;
+/// first phoneme is clipped and the model guesses at it. 500 ms covers a slow
+/// finger without retaining so much silence that the recognizer stalls.
+pub const PREROLL_MS: u32 = 500;
 
 /// Frames held in the pre-roll ring buffer.
 pub const PREROLL_FRAMES: usize = (PREROLL_MS / FRAME_MS) as usize;
@@ -47,7 +48,7 @@ mod tests {
     fn frame_geometry_matches_twenty_milliseconds() {
         assert_eq!(FRAME_SAMPLES, 320);
         assert_eq!(FRAME_BYTES, 640);
-        assert_eq!(PREROLL_FRAMES, 15);
+        assert_eq!(PREROLL_FRAMES, 25);
     }
 
     #[test]

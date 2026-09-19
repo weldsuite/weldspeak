@@ -13,7 +13,7 @@
 //! "it misheard me" complaints.
 //!
 //! A second buffer mode covers the opposite race: the user speaks and releases
-//! before the server says `ready`. Idle pre-roll is a 300 ms ring; once the
+//! before the server says `ready`. Idle pre-roll is a 500 ms ring; once the
 //! hotkey is down we *hold* every frame until streaming starts, so a slow
 //! socket cannot age the utterance out of the ring.
 
@@ -262,19 +262,19 @@ mod tests {
 
     #[test]
     fn preroll_covers_the_intended_duration() {
-        // The point of the buffer is 300 ms of lead-in; if the constants ever
+        // The point of the buffer is 500 ms of lead-in; if the constants ever
         // drift apart, this is what notices.
         let mut framer = Framer::new();
         framer.push(&ramp(FRAME_SAMPLES * (PREROLL_FRAMES + 10)));
 
         let captured_ms = framer.preroll_len() * 20;
-        assert_eq!(captured_ms, 300);
+        assert_eq!(captured_ms, 500);
     }
 
     #[test]
     fn hold_keeps_speech_while_waiting_for_ready() {
-        // Idle ring would drop everything older than 300 ms; holding must not,
-        // or a quick tap before `ready` arrives ships silence.
+        // Idle ring would drop everything older than the pre-roll; holding must
+        // not, or a quick tap before `ready` arrives ships silence.
         let mut framer = Framer::new();
         framer.push(&ramp(FRAME_SAMPLES * 3));
         framer.hold();

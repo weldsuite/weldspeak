@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::{current_level, notice_lock, PHASE};
 
 static HWND_BITS: AtomicIsize = AtomicIsize::new(0);
-static SIZE: Mutex<(i32, i32)> = Mutex::new((72, 30));
+static SIZE: Mutex<(i32, i32)> = Mutex::new((52, 22));
 static BAR_ENV: Mutex<f32> = Mutex::new(0.0);
 
 fn rgb(c: (u8, u8, u8)) -> COLORREF {
@@ -60,8 +60,8 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
             WS_POPUP,
             0,
             0,
-            72,
-            30,
+            52,
+            22,
             HWND::default(),
             windows::Win32::UI::WindowsAndMessaging::HMENU::default(),
             module(),
@@ -72,7 +72,7 @@ pub fn create(_app: &AppHandle) -> tauri::Result<()> {
         let _ = SetLayeredWindowAttributes(window, COLORREF(0), 236, LWA_ALPHA);
         HWND_BITS.store(window.0 as isize, Ordering::Relaxed);
         let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE));
-        round_region(window, 72, 30);
+        round_region(window, 52, 22);
     }
     Ok(())
 }
@@ -170,7 +170,7 @@ fn paint(window: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(window, &mut ps);
-        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((72, 30));
+        let (w, h) = SIZE.lock().map(|s| *s).unwrap_or((52, 22));
         let bg = CreateSolidBrush(rgb(theme::OVERLAY_BG_RGB));
         let rect = RECT {
             left: 0,
@@ -196,7 +196,7 @@ fn draw_notice(hdc: HDC, text: &str, h: i32) {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, rgb(theme::OVERLAY_TEXT_RGB));
         let font = CreateFontW(
-            12,
+            11,
             0,
             0,
             0,
@@ -213,7 +213,7 @@ fn draw_notice(hdc: HDC, text: &str, h: i32) {
         );
         let old = SelectObject(hdc, font);
         let wide: Vec<u16> = text.encode_utf16().collect();
-        let _ = TextOutW(hdc, 12, (h / 2) - 7, &wide);
+        let _ = TextOutW(hdc, 10, (h / 2) - 6, &wide);
         SelectObject(hdc, old);
         let _ = DeleteObject(font);
     }
@@ -244,12 +244,12 @@ fn draw_bars(hdc: HDC, w: i32, h: i32, thinking: bool) {
     unsafe {
         let brush = CreateSolidBrush(rgb(color));
         let old_pen = SelectObject(hdc, GetStockObject(BLACK_PEN));
-        let gap = 3;
-        let bar_w = 3;
+        let gap = 2;
+        let bar_w = 2;
         let count = 5;
         let total = count * bar_w + (count - 1) * gap;
         let start_x = (w - total) / 2;
-        let max_h = (h as f32 - 10.0).max(10.0);
+        let max_h = (h as f32 - 8.0).max(8.0);
         for i in 0..count {
             let wobble = 0.32 + 0.68 * ((i as f32 * 1.41 + envelope * 2.4).sin().abs());
             let floor = if thinking { 0.18 } else { 0.14 };

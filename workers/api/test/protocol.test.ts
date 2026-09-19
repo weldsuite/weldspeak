@@ -24,7 +24,7 @@ describe("audio constants", () => {
     expect(SAMPLE_RATE).toBe(16_000);
     expect(FRAME_SAMPLES).toBe(320);
     expect(FRAME_BYTES).toBe(640);
-    expect(PREROLL_FRAMES).toBe(15);
+    expect(PREROLL_FRAMES).toBe(25);
   });
 
   it("converts bytes to duration", () => {
