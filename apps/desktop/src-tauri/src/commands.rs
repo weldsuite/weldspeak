@@ -463,10 +463,10 @@ pub fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
     Ok(())
 }
 
-/// First currently held bindable key — used by Hub “Hold a key…” capture.
+/// Settled one- or two-key chord — used by Hub “Hold keys…” capture.
 #[tauri::command]
 pub fn poll_held_hotkey() -> Option<String> {
-    hotkey::first_held_code()
+    hotkey::settled_held_accelerator()
 }
 
 /// Open a URL in the system browser (dashboard, docs).

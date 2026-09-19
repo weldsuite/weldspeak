@@ -500,10 +500,10 @@ function settingsPage(): string {
         <h2 class="panel-title">Dictation</h2>
         <div class="panel-body">
           <div class="row">
-            <span class="row-label"><span>Key</span><small>Hold to talk</small></span>
+            <span class="row-label"><span>Listen keys</span><small>Hold one key, or two together</small></span>
             <div class="bind-group">
               <button type="button" class="primary" id="bind-key">${
-                binding ? "Listening…" : escapeHtml(hotkeyLabel)
+                binding ? "Hold keys…" : escapeHtml(hotkeyLabel)
               }</button>
             </div>
           </div>
@@ -804,7 +804,7 @@ async function startBind(): Promise<void> {
       // preview: fake after a moment
       if (Date.now() - started > 800) {
         await save({
-          hotkey: { mode: "pushToTalk", accelerator: "ControlRight" },
+          hotkey: { mode: "pushToTalk", accelerator: "ControlLeft+ShiftLeft" },
         });
         await endBind();
         return;
@@ -832,14 +832,20 @@ async function endBind(): Promise<void> {
 async function refreshHotkeyHint(): Promise<void> {
   const hint = hubRoot?.querySelector<HTMLElement>("#hotkey-hint");
   if (!hint) return;
+  const parts = settings.hotkey.accelerator.split("+").filter(Boolean);
+  const chordHint =
+    parts.length > 1
+      ? `Hold ${prettyKey(settings.hotkey.accelerator)} together to listen.`
+      : "";
   try {
     const warning = await call<string | null>("hotkey_warning", {
       accelerator: settings.hotkey.accelerator,
     });
-    hint.textContent = warning ?? "";
+    const text = warning ?? chordHint;
+    hint.textContent = text;
     hint.classList.toggle("error", Boolean(warning));
   } catch {
-    hint.textContent = "";
+    hint.textContent = chordHint;
   }
 }
 
@@ -858,8 +864,14 @@ function prettyKey(accelerator: string): string {
     MetaRight: "Right ⌘",
     MetaLeft: "Left ⌘",
     CapsLock: "Caps Lock",
+    Space: "Space",
   };
-  return map[accelerator] ?? accelerator;
+  return accelerator
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => map[part] ?? part)
+    .join(" + ");
 }
 
 function formatWhen(iso: string): string {

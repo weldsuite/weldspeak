@@ -161,7 +161,27 @@ impl Capture {
     ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU32>)> {
         let device = pick_input_device(preferred)?;
 
-        let supported = device.default_input_config()?;
+        let mut supported = device.default_input_config()?;
+        // Prefer 48 kHz (or 44.1) when the device offers it — more headroom for
+        // the anti-aliasing resampler than a low native rate.
+        if let Ok(configs) = device.supported_input_configs() {
+            let preferred = configs
+                .filter(|range| range.channels() >= 1)
+                .filter_map(|range| {
+                    let max = range.max_sample_rate().0;
+                    let min = range.min_sample_rate().0;
+                    let rate = [48_000, 44_100, 32_000, 16_000]
+                        .into_iter()
+                        .find(|r| *r >= min && *r <= max)?;
+                    Some(range.with_sample_rate(cpal::SampleRate(rate)))
+                })
+                .max_by_key(|cfg| cfg.sample_rate().0);
+            if let Some(better) = preferred {
+                if better.sample_rate().0 > supported.sample_rate().0 {
+                    supported = better;
+                }
+            }
+        }
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
 
@@ -296,7 +316,11 @@ fn process(
         return;
     };
 
-    let resampled = pipeline.resampler.push(samples);
+    // Quiet laptop mics often sit well below the level Nova-3 was trained on.
+    // Soft make-up gain lifts speech toward a healthy peak without touching
+    // already-loud input (and without inventing a noise gate).
+    let boosted = apply_makeup_gain(samples, peak);
+    let resampled = pipeline.resampler.push(&boosted);
     for frame in pipeline.framer.push(&resampled) {
         if frames.send(frame).is_err() {
             // The receiver is gone; the session has ended.
@@ -314,9 +338,28 @@ fn rms_f32(samples: &[f32]) -> f32 {
     (sum / samples.len() as f32).sqrt().min(1.0)
 }
 
+/// Soft make-up gain for quiet microphones.
+///
+/// Target peak ~0.35 when the buffer is clearly speech-like but quiet. Silence
+/// and already-loud buffers are left alone so noise floor and clipping stay put.
+fn apply_makeup_gain(samples: &[f32], peak: f32) -> Vec<f32> {
+    const FLOOR: f32 = 0.012;
+    const TARGET: f32 = 0.35;
+    const MAX_GAIN: f32 = 4.0;
+
+    if peak < FLOOR || peak >= TARGET {
+        return samples.to_vec();
+    }
+    let gain = (TARGET / peak).min(MAX_GAIN);
+    samples
+        .iter()
+        .map(|sample| (sample * gain).clamp(-1.0, 1.0))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rms_f32;
+    use super::{apply_makeup_gain, rms_f32};
 
     #[test]
     fn silence_is_zero() {
@@ -326,5 +369,28 @@ mod tests {
     #[test]
     fn a_full_scale_tone_is_loud() {
         assert!(rms_f32(&[1.0, -1.0, 1.0, -1.0]) > 0.9);
+    }
+
+    #[test]
+    fn quiet_speech_is_boosted() {
+        let quiet: Vec<f32> = (0..64).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }).collect();
+        let peak = 0.05;
+        let boosted = apply_makeup_gain(&quiet, peak);
+        let out_peak = boosted.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(out_peak > 0.2, "expected make-up gain, got peak {out_peak}");
+    }
+
+    #[test]
+    fn loud_speech_is_unchanged() {
+        let loud = vec![0.5f32, -0.5, 0.4, -0.4];
+        let boosted = apply_makeup_gain(&loud, 0.5);
+        assert_eq!(boosted, loud);
+    }
+
+    #[test]
+    fn near_silence_is_not_amplified() {
+        let hush = vec![0.001f32, -0.001, 0.002, -0.002];
+        let boosted = apply_makeup_gain(&hush, 0.002);
+        assert_eq!(boosted, hush);
     }
 }

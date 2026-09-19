@@ -32,6 +32,33 @@ import {
 import { cleanupTranscript } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
 import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
+import type { DictionaryTerm } from "@weldspeak/protocol";
+
+/** Deepgram keyterm budget — keep the list short and unique. */
+const MAX_KEYTERMS = 100;
+
+/**
+ * Build the Deepgram `keyterm` list from the glossary.
+ *
+ * Written forms and optional `soundsLike` spellings both boost recognition;
+ * duplicates are dropped. Cap keeps the Workers AI payload bounded.
+ */
+export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const term of terms) {
+    for (const candidate of [term.term, term.soundsLike]) {
+      const value = candidate?.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+      if (out.length >= MAX_KEYTERMS) return out;
+    }
+  }
+  return out;
+}
 
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
 export interface SessionIdentity {
@@ -179,9 +206,11 @@ export class DictationSession extends DurableObject<Env> {
 
     // The org glossary is merged server-side rather than trusting the client's
     // keyterm list: it keeps the vocabulary authoritative and stops a client
-    // from probing another org's glossary by guessing terms.
+    // from probing another org's glossary by guessing terms. Include
+    // `soundsLike` hints as extra keyterms so pronunciation spellings also
+    // boost the written form Deepgram should emit.
     const terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
-    const keyterms = terms.map((term) => term.term);
+    const keyterms = glossaryKeyterms(terms);
 
     try {
       await this.#connectUpstream(frame, keyterms);
@@ -203,6 +232,11 @@ export class DictationSession extends DurableObject<Env> {
    * as all-strings and rejects a number or boolean with a 400 ("expected a
    * string"), so `sample_rate: 16000` fails where `"16000"` succeeds. Only
    * `keyterm` stays structured, as an array of strings.
+   *
+   * Options below are fields declared on Cloudflare's
+   * `@cf/deepgram/nova-3` input type — nothing invented. Hold-to-talk closes
+   * the stream itself, so `endpointing` is disabled to avoid mid-pause
+   * finals that discard acoustic context for the next phrase.
    */
   async #connectUpstream(frame: StartFrame, keyterms: string[]): Promise<void> {
     const response = (await this.env.AI.run(
@@ -214,6 +248,14 @@ export class DictationSession extends DurableObject<Env> {
         interim_results: "true",
         punctuate: "true",
         smart_format: "true",
+        // Spoken "period" / "comma" → punctuation (Deepgram dictation mode).
+        dictation: "true",
+        // Numerals: "twenty five" → "25" — useful for weld specs and sizes.
+        numerals: "true",
+        // Keep fillers out of the raw transcript; cleanup still strips hedges.
+        filler_words: "false",
+        // Client issues CloseStream on hotkey-up; do not auto-finalize on pause.
+        endpointing: "false",
         ...(frame.locale ? { language: frame.locale } : {}),
         ...(keyterms.length > 0 ? { keyterm: keyterms } : {}),
       } as never,
@@ -357,7 +399,7 @@ export class DictationSession extends DurableObject<Env> {
    * Resolves as soon as a final arrives. The timeout is only a backstop for a
    * recognizer that never flushes, so the tail of the last word is not cut.
    */
-  async #awaitFinalTranscript(timeoutMs = 800): Promise<void> {
+  async #awaitFinalTranscript(timeoutMs = 1_200): Promise<void> {
     const before = this.#finals.length;
     const deadline = Date.now() + timeoutMs;
 

@@ -143,33 +143,93 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// First currently held bindable key, for native Settings capture.
-pub fn first_held_code() -> Option<String> {
-    const CANDIDATES: &[&str] = &[
-        "ControlRight",
-        "ControlLeft",
-        "AltRight",
-        "AltLeft",
-        "ShiftRight",
-        "ShiftLeft",
-        "MetaRight",
-        "MetaLeft",
-        "F8",
-        "F9",
-        "F7",
-        "F6",
-        "F5",
-        "CapsLock",
-        "Space",
-    ];
-    for code in CANDIDATES {
+/// Bindable keys offered during Settings capture, in display/priority order.
+const CAPTURE_CANDIDATES: &[&str] = &[
+    "ControlRight",
+    "ControlLeft",
+    "AltRight",
+    "AltLeft",
+    "ShiftRight",
+    "ShiftLeft",
+    "MetaRight",
+    "MetaLeft",
+    "F8",
+    "F9",
+    "F7",
+    "F6",
+    "F5",
+    "CapsLock",
+    "Space",
+];
+
+/// How long a chord must stay stable before Settings commits it.
+///
+/// Without this, holding Ctrl then Shift would bind Ctrl alone on the first
+/// poll before the second finger lands.
+const CAPTURE_SETTLE: Duration = Duration::from_millis(180);
+
+/// Currently held bindable keys as an accelerator (`ControlLeft`, or
+/// `ControlLeft+ShiftLeft`). At most two keys — that is the native watcher limit.
+pub fn held_accelerator() -> Option<String> {
+    let mut held: Vec<&str> = Vec::new();
+    for code in CAPTURE_CANDIDATES {
         if let Some(native) = codes::native_code(code) {
             if platform::is_down(native) {
-                return Some((*code).into());
+                held.push(*code);
+                if held.len() == 2 {
+                    break;
+                }
             }
         }
     }
-    None
+    if held.is_empty() {
+        None
+    } else {
+        Some(held.join("+"))
+    }
+}
+
+/// First currently held bindable key (legacy helper for tests / call sites).
+pub fn first_held_code() -> Option<String> {
+    held_accelerator().and_then(|accel| {
+        codes::parts(&accel)
+            .into_iter()
+            .next()
+            .map(str::to_string)
+    })
+}
+
+/// Settled accelerator for Hub capture: waits until the held set is stable.
+///
+/// Returns `Some` once the same one- or two-key chord has been held for
+/// [`CAPTURE_SETTLE`], so multi-key binds are first-class in Settings.
+pub fn settled_held_accelerator() -> Option<String> {
+    use std::sync::Mutex;
+    static SETTLE: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
+    let slot = SETTLE.get_or_init(|| Mutex::new(None));
+
+    let current = held_accelerator();
+    let Ok(mut guard) = slot.lock() else {
+        return current;
+    };
+
+    match (guard.as_ref(), current.as_ref()) {
+        (_, None) => {
+            *guard = None;
+            None
+        }
+        (Some((prev, started)), Some(cur)) if prev == cur => {
+            if started.elapsed() >= CAPTURE_SETTLE {
+                Some(cur.clone())
+            } else {
+                None
+            }
+        }
+        (_, Some(cur)) => {
+            *guard = Some((cur.clone(), Instant::now()));
+            None
+        }
+    }
 }
 
 /// Hint shown under the bind button when the key will also type.
@@ -406,6 +466,7 @@ mod tests {
         {
             assert!(validate_for_push_to_talk("ControlRight+MetaLeft").is_ok());
             assert!(validate_for_push_to_talk("ControlLeft+AltLeft").is_ok());
+            assert!(validate_for_push_to_talk("ControlLeft+ShiftLeft").is_ok());
         }
         assert!(validate_for_push_to_talk("ControlRight+ControlRight").is_err());
         assert!(validate_for_push_to_talk("Escape+ControlRight").is_err());
