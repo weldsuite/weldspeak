@@ -1,5 +1,5 @@
 /* WeldSpeak Hub — calm dictation chrome.
-   Soft atmosphere, strong type, refined list. Native pill stays separate. */
+   Mist/teal/slate tokens, crisp edges, tight rhythm. Native pill stays separate. */
 
 @font-face {
   font-family: "Plus Jakarta Sans";
@@ -55,10 +55,10 @@
   --warning-border: rgba(217, 119, 6, 0.28);
   --warning-text: #92400e;
   --danger: #b91c1c;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 10px 32px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
-  --radius: 18px;
-  --radius-sm: 12px;
+  --shadow-sm: 0 1px 1px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --radius: 8px;
+  --radius-sm: 6px;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --rail-width: 212px;
   color-scheme: light;
@@ -112,8 +112,8 @@ body::before {
 .rail {
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  padding: 22px 16px 18px;
+  gap: 22px;
+  padding: 18px 14px 14px;
   background:
     linear-gradient(180deg, #132033 0%, var(--rail) 48%, #0b1220 100%);
   color: var(--rail-text);
@@ -141,9 +141,9 @@ body::before {
 }
 
 .brand-orb {
-  width: 32px;
-  height: 32px;
-  border-radius: 11px;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
   background:
     radial-gradient(circle at 30% 30%, #5eead4, transparent 55%),
     linear-gradient(145deg, #0f766e, #134e4a);
@@ -184,9 +184,9 @@ body::before {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--rail-muted);
   font: inherit;
@@ -298,7 +298,7 @@ body::before {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 18px 20px 20px;
+  padding: 14px 16px 16px;
   overflow: hidden;
   animation: rise-in 420ms var(--ease-out) both;
 }
@@ -310,12 +310,12 @@ body::before {
   flex: 1;
   min-height: 0;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.48) 42%, rgba(255, 255, 255, 0.36) 100%);
-  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  border-radius: calc(var(--radius) + 4px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(14px) saturate(1.08);
-  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.58) 42%, rgba(255, 255, 255, 0.46) 100%);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(10px) saturate(1.05);
+  -webkit-backdrop-filter: blur(10px) saturate(1.05);
   overflow: hidden;
   animation: surface-in 480ms var(--ease-out) both;
 }
@@ -324,13 +324,13 @@ body::before {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
   flex: none;
   margin: 0;
-  padding: 22px 26px 14px;
+  padding: 18px 20px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, transparent 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, transparent 100%);
 }
 
 .stage-head-copy {
@@ -350,10 +350,10 @@ body::before {
 
 .stage-head h1 {
   margin: 0;
-  font-size: 1.7rem;
+  font-size: 1.55rem;
   font-weight: 700;
-  letter-spacing: -0.045em;
-  line-height: 1.12;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
   color: var(--text);
 }
 
@@ -361,12 +361,12 @@ body::before {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.35em 0.45em;
-  margin: 8px 0 0;
+  gap: 0.3em 0.4em;
+  margin: 6px 0 0;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   font-weight: 500;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.01em;
   line-height: 1.35;
   max-width: 56ch;
 }
@@ -391,7 +391,7 @@ body::before {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 6px 14px 14px;
+  padding: 4px 10px 10px;
 }
 
 .history-sheet,
@@ -428,8 +428,8 @@ body::before {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 12px;
+  gap: 14px;
+  padding: 11px 10px;
   border-radius: var(--radius-sm);
   transition: background 140ms ease;
 }
@@ -487,8 +487,8 @@ body::before {
 .empty {
   display: grid;
   place-items: start;
-  gap: 14px;
-  padding: 36px 20px;
+  gap: 12px;
+  padding: 28px 16px;
   color: var(--muted);
 }
 
@@ -497,8 +497,8 @@ body::before {
 .composer {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
-  gap: 10px;
-  margin: 8px 8px 16px;
+  gap: 8px;
+  margin: 6px 6px 12px;
 }
 
 .composer input {
@@ -516,9 +516,9 @@ body::before {
   .rail::before { width: 100%; height: 2px; bottom: auto; }
   .rail-nav { flex-direction: row; flex: 1; }
   .rail-foot { display: none; }
-  .stage { padding: 12px; }
-  .stage-head { padding: 16px 16px 12px; }
-  .stage-body { padding: 4px 8px 10px; }
+  .stage { padding: 10px; }
+  .stage-head { padding: 14px 14px 10px; }
+  .stage-body { padding: 2px 6px 8px; }
   .composer { grid-template-columns: 1fr; }
 }
 
@@ -536,7 +536,7 @@ body::before {
 .hint.error { color: #dc2626; }
 
 .panel {
-  padding: 18px 0 16px;
+  padding: 14px 0 12px;
   border-top: 1px solid var(--border);
   background: transparent;
   box-shadow: none;
@@ -545,8 +545,8 @@ body::before {
 .panel:first-child { border-top: 0; }
 
 .panel.warning {
-  margin: 12px 0 4px;
-  padding: 16px;
+  margin: 10px 0 4px;
+  padding: 12px;
   border: 1px solid var(--warning-border);
   border-radius: var(--radius-sm);
   background: var(--warning-bg);
@@ -635,9 +635,9 @@ input:not([type]),
 select {
   font: inherit;
   font-weight: 500;
-  padding: 8px 11px;
+  padding: 7px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--surface-solid);
   color: var(--text);
   min-width: 180px;
@@ -654,28 +654,28 @@ button {
   font: inherit;
   font-weight: 600;
   letter-spacing: -0.01em;
-  padding: 9px 15px;
+  padding: 7px 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-solid);
   color: var(--text);
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: transform 140ms var(--ease-out), background 140ms ease, border-color 140ms ease;
+  box-shadow: none;
+  transition: background 140ms ease, border-color 140ms ease;
 }
 
 button:hover {
-  transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--text) 18%, var(--border));
+  background: color-mix(in srgb, var(--text) 3%, var(--surface-solid));
 }
 
-button:active { transform: translateY(0); }
+button:active { background: color-mix(in srgb, var(--text) 6%, var(--surface-solid)); }
 
 button.primary {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent));
   border-color: transparent;
   color: var(--accent-text);
-  box-shadow: 0 6px 16px var(--accent-soft), var(--shadow-sm);
+  box-shadow: none;
 }
 
 button.primary:hover { filter: brightness(1.05); }
