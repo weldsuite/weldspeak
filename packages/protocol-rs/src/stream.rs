@@ -6,6 +6,55 @@
 
 use serde::{Deserialize, Serialize};
 
+/// What surrounds the cursor in the field being dictated into.
+///
+/// Mirrors `FieldContext` in stream.ts. Cleanup uses it to continue a
+/// sentence and spell names already on screen; the server never stores it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldContext {
+    /// Text just before the cursor, at most [`MAX_CONTEXT_BEFORE`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// Text just after the cursor, at most [`MAX_CONTEXT_AFTER`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Focused window title; in a browser it names the site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
+}
+
+pub const MAX_CONTEXT_BEFORE: usize = 1_500;
+pub const MAX_CONTEXT_AFTER: usize = 500;
+pub const MAX_WINDOW_TITLE: usize = 200;
+
+impl FieldContext {
+    /// Keep the text nearest the cursor and drop empty parts. `None` when
+    /// nothing useful is left, so the frame carries no empty object.
+    pub fn trimmed(self) -> Option<Self> {
+        fn keep(text: Option<String>) -> Option<String> {
+            text.filter(|text| !text.trim().is_empty())
+        }
+        let before = keep(self.before).map(|text| last_chars(&text, MAX_CONTEXT_BEFORE));
+        let after = keep(self.after).map(|text| text.chars().take(MAX_CONTEXT_AFTER).collect());
+        let window_title = keep(self.window_title)
+            .map(|text| text.trim().chars().take(MAX_WINDOW_TITLE).collect());
+        if before.is_none() && after.is_none() && window_title.is_none() {
+            return None;
+        }
+        Some(Self {
+            before,
+            after,
+            window_title,
+        })
+    }
+}
+
+fn last_chars(text: &str, count: usize) -> String {
+    let total = text.chars().count();
+    text.chars().skip(total.saturating_sub(count)).collect()
+}
+
 /// Frames sent by the desktop client.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -37,7 +86,11 @@ pub enum ClientFrame {
     },
     /// Sent on hotkey release. The server finalizes and replies `result`.
     #[serde(rename = "stop")]
-    Stop,
+    Stop {
+        /// Cursor context captured at hotkey-down, for cleanup only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<FieldContext>,
+    },
     /// Sent on Escape. The server discards the utterance; no `result` follows.
     #[serde(rename = "cancel")]
     Cancel,
@@ -148,9 +201,43 @@ mod tests {
     #[test]
     fn unit_frames_carry_only_a_type() {
         assert_eq!(
-            serde_json::to_string(&ClientFrame::Stop).unwrap(),
+            serde_json::to_string(&ClientFrame::Stop { context: None }).unwrap(),
             r#"{"type":"stop"}"#
         );
+    }
+
+    #[test]
+    fn stop_carries_cursor_context_in_the_typescript_shape() {
+        let frame = ClientFrame::Stop {
+            context: FieldContext {
+                before: Some("Hi Aysha, ".into()),
+                after: None,
+                window_title: Some("Inbox - Gmail".into()),
+            }
+            .trimmed(),
+        };
+        assert_eq!(
+            serde_json::to_string(&frame).unwrap(),
+            r#"{"type":"stop","context":{"before":"Hi Aysha, ","windowTitle":"Inbox - Gmail"}}"#
+        );
+        let parsed: ClientFrame = serde_json::from_str(r#"{"type":"stop"}"#).unwrap();
+        assert_eq!(parsed, ClientFrame::Stop { context: None });
+    }
+
+    #[test]
+    fn context_keeps_the_text_nearest_the_cursor() {
+        let context = FieldContext {
+            before: Some(format!("{}END", "x".repeat(MAX_CONTEXT_BEFORE))),
+            after: Some(format!("START{}", "y".repeat(MAX_CONTEXT_AFTER))),
+            window_title: Some("   ".into()),
+        }
+        .trimmed()
+        .unwrap();
+        assert!(context.before.as_deref().unwrap().ends_with("END"));
+        assert_eq!(context.before.unwrap().chars().count(), MAX_CONTEXT_BEFORE);
+        assert!(context.after.as_deref().unwrap().starts_with("START"));
+        assert_eq!(context.window_title, None);
+        assert_eq!(FieldContext::default().trimmed(), None);
     }
 
     #[test]

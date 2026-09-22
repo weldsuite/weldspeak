@@ -43,9 +43,33 @@ export interface StartFrame {
   retain?: boolean;
 }
 
+/**
+ * What surrounds the cursor in the field being dictated into, read when the
+ * hotkey went down. Wispr Flow–style context: cleanup uses it to continue a
+ * sentence, spell names already on screen, and tell a Gmail tab from a
+ * Slack one. Used for this dictation's cleanup only; never stored.
+ */
+export interface FieldContext {
+  /** Text just before the cursor, at most MAX_CONTEXT_BEFORE characters. */
+  before?: string;
+  /** Text just after the cursor, at most MAX_CONTEXT_AFTER characters. */
+  after?: string;
+  /** Focused window title — in a browser it names the site ("Inbox - Gmail"). */
+  windowTitle?: string;
+}
+
+export const MAX_CONTEXT_BEFORE = 1_500;
+export const MAX_CONTEXT_AFTER = 500;
+export const MAX_WINDOW_TITLE = 200;
+
 /** Sent on hotkey release. The server finalizes, cleans up, and replies `result`. */
 export interface StopFrame {
   type: "stop";
+  /**
+   * Cursor context, captured at hotkey-down and sent here because it is only
+   * needed for cleanup. Servers that predate it ignore the field.
+   */
+  context?: FieldContext;
 }
 
 /** Sent on Escape. The server discards the utterance and emits no `result`. */
@@ -159,13 +183,40 @@ export function decodeTokenSubprotocol(header: string | null): string | null {
  * asserting it. Returns null on anything unrecognized; callers reply with a
  * `bad_request` error rather than throwing.
  */
+/**
+ * Validate cursor context from the client.
+ *
+ * Clamped rather than rejected: context is a hint, and an oversized field
+ * from a large document should cost a trim, not the dictation. The text
+ * nearest the cursor is what matters, so `before` keeps its end and `after`
+ * its start.
+ */
+export function parseFieldContext(value: unknown): FieldContext | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const text = (field: unknown) => (typeof field === "string" && field.trim() ? field : undefined);
+
+  const before = text(raw.before)?.slice(-MAX_CONTEXT_BEFORE);
+  const after = text(raw.after)?.slice(0, MAX_CONTEXT_AFTER);
+  const windowTitle = text(raw.windowTitle)?.trim().slice(0, MAX_WINDOW_TITLE);
+
+  if (!before && !after && !windowTitle) return undefined;
+  return {
+    ...(before ? { before } : {}),
+    ...(after ? { after } : {}),
+    ...(windowTitle ? { windowTitle } : {}),
+  };
+}
+
 export function parseClientFrame(value: unknown): ClientFrame | null {
   if (typeof value !== "object" || value === null) return null;
   const frame = value as Record<string, unknown>;
 
   switch (frame.type) {
-    case "stop":
-      return { type: "stop" };
+    case "stop": {
+      const context = parseFieldContext(frame.context);
+      return context ? { type: "stop", context } : { type: "stop" };
+    }
     case "cancel":
       return { type: "cancel" };
     case "ping":

@@ -53,6 +53,8 @@ pub const RELEASE_TAIL: Duration = Duration::from_millis(250);
 static STOP_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// A release is waiting out its tail; the next press continues the dictation.
 static STOP_PENDING: AtomicBool = AtomicBool::new(false);
+/// Bumped per dictation so a slow context read cannot land on the next one.
+static CONTEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Hotkey pressed: open a session.
 pub fn begin(app: &AppHandle) {
@@ -95,11 +97,66 @@ pub fn begin(app: &AppHandle) {
         }
     }
     crate::learn::invalidate();
+    // Read what is around the cursor now, while the target field still has
+    // focus and before the dictation changes it.
+    capture_context(app);
     // Show the pill before the socket is up. Without this, a held key looks
     // like nothing happened — the Wispr Flow complaint.
     crate::overlay::appear_listening(app);
     crate::media::pause_if_enabled(app);
     perform(app, actions);
+}
+
+/// Read the cursor context in the background and park it for `stop`.
+///
+/// Wispr Flow skips context it cannot read quickly, and so does this: the read
+/// never delays the dictation, and one that finishes after the key is released
+/// is dropped.
+fn capture_context(app: &AppHandle) {
+    let generation = CONTEXT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let state = app.state::<AppState>();
+    if let Ok(mut slot) = state.field_context.lock() {
+        *slot = None;
+    }
+    let enabled = state
+        .settings
+        .lock()
+        .map(|settings| settings.use_context)
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("weldspeak-context".into())
+        .spawn(move || {
+            let context = read_context(&app);
+            if CONTEXT_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if let Ok(mut slot) = app.state::<AppState>().field_context.lock() {
+                *slot = context;
+            }
+        });
+}
+
+fn read_context(app: &AppHandle) -> Option<weldspeak_protocol::FieldContext> {
+    // Accessibility is read on the main thread on macOS, as everywhere else in
+    // this app; UI Automation on Windows must stay off the UI thread.
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = app.run_on_main_thread(move || {
+            let _ = tx.send(crate::inject::focused_context());
+        });
+        rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        crate::inject::focused_context()
+    }
 }
 
 /// Hotkey released: keep listening for `tail`, then finish and wait for the
@@ -157,7 +214,15 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             Action::OpenSocket => open_socket(app),
             Action::StartStreaming => start_streaming(app),
             Action::SendStop => {
-                send(app, Outbound::Control(ClientFrame::Stop));
+                // Whatever the context read produced by now goes with the stop;
+                // a read still stuck on a slow app is simply left out.
+                let context = app
+                    .state::<AppState>()
+                    .field_context
+                    .lock()
+                    .ok()
+                    .and_then(|mut slot| slot.take());
+                send(app, Outbound::Control(ClientFrame::Stop { context }));
                 let _ = app.emit("weldspeak://thinking", ());
                 crate::overlay::appear_thinking(app);
             }

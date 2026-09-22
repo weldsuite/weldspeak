@@ -12,6 +12,7 @@ import {
   decodeTokenSubprotocol,
   encodeTokenSubprotocol,
   parseClientFrame,
+  MAX_CONTEXT_BEFORE,
   bytesToMs,
   FRAME_BYTES,
   FRAME_SAMPLES,
@@ -92,6 +93,24 @@ describe("client frame parsing", () => {
     expect(parseClientFrame({ type: "stop" })).toEqual({ type: "stop" });
     expect(parseClientFrame({ type: "cancel" })).toEqual({ type: "cancel" });
     expect(parseClientFrame({ type: "ping" })).toEqual({ type: "ping" });
+  });
+
+  it("reads cursor context from a stop frame, keeping the text nearest the cursor", () => {
+    const frame = parseClientFrame({
+      type: "stop",
+      context: {
+        before: `${"x".repeat(MAX_CONTEXT_BEFORE)}END`,
+        after: 42,
+        windowTitle: "  Inbox - Gmail  ",
+      },
+    });
+    expect(frame).toEqual({
+      type: "stop",
+      context: { before: `${"x".repeat(MAX_CONTEXT_BEFORE - 3)}END`, windowTitle: "Inbox - Gmail" },
+    });
+    // An empty context is dropped rather than sent on as {}.
+    expect(parseClientFrame({ type: "stop", context: { before: "   " } })).toEqual({ type: "stop" });
+    expect(parseClientFrame({ type: "stop", context: "nope" })).toEqual({ type: "stop" });
   });
 
   it("rejects anything unrecognised", () => {

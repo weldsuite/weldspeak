@@ -51,6 +51,8 @@ interface Case {
   id: string;
   raw: string;
   appName?: string;
+  /** Text around the cursor and window title, as the desktop sends them. */
+  field?: { before?: string; after?: string; windowTitle?: string };
   glossary?: Array<{ term: string; soundsLike?: string }>;
   expect: {
     /** Case-insensitive substrings the output must contain. */
@@ -117,6 +119,30 @@ const CASES: Case[] = [
       include: ["middleware", "device token", "clerk session", "error messages", "refresh", "fallback", "auth.test.ts"],
       exclude: ["```", "Sure,"],
     },
+  },
+  {
+    id: "continue-sentence",
+    raw: "move the launch to friday so the docs team has time to review",
+    appName: "chrome",
+    field: {
+      before: "Hi Marina,\n\nThanks for the update. Given the open issues, I think we should",
+      windowTitle: "Re: Launch plan - marina@weldsuite.org - Gmail",
+    },
+    expect: {
+      include: ["friday", "docs team", "review"],
+      exclude: ["Thanks for the update", "I think we should", "Hi Marina"],
+      match: [/^move\b/],
+    },
+  },
+  {
+    id: "name-from-screen",
+    raw: "aisha can you send me the weld procedure before thursday",
+    appName: "Slack",
+    field: {
+      before: "Aysha Rahman: the WPS draft is ready for review\n",
+      windowTitle: "Aysha Rahman (DM) - WeldSuite - Slack",
+    },
+    expect: { include: ["Aysha", "weld procedure", "Thursday"], exclude: ["Aisha", "the WPS draft is ready"] },
   },
   {
     id: "dutch-prompt",
@@ -206,7 +232,7 @@ async function runOnce(token: string, model: string, c: Case): Promise<RunResult
   const body = {
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildCleanupPrompt(c.raw, { terms, appName: c.appName ?? null }) },
+      { role: "user", content: buildCleanupPrompt(c.raw, { terms, appName: c.appName ?? null, field: c.field }) },
     ],
     temperature: 0,
     max_tokens: cleanupMaxTokens(c.raw),
@@ -238,7 +264,7 @@ async function runOnce(token: string, model: string, c: Case): Promise<RunResult
     }
     const out = extract(json.result);
     const text = stripModelChatter(out.text ?? "");
-    const verdict = judgeCleanup(c.raw.trim(), text);
+    const verdict = judgeCleanup(c.raw.trim(), text, c.field);
     const late = ms > deadlineMs(c.raw);
     const truncated = out.finish === "length";
     const shipped = verdict.ok && !late && !truncated;

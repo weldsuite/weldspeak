@@ -14,6 +14,8 @@ import {
   buildCleanupPrompt,
   cleanupDeadlineMs,
   cleanupTranscript,
+  endsMidSentence,
+  fitToCursor,
   judgeCleanup,
   looksLikeAssistantReply,
   stripModelChatter,
@@ -332,5 +334,125 @@ describe("cleanup", () => {
     // 2.5 s deadline shipped every one of them raw.
     expect(cleanupDeadlineMs("x".repeat(1_300))).toBeGreaterThan(5_000);
     expect(cleanupDeadlineMs("x".repeat(100_000))).toBe(MAX_CLEANUP_TIMEOUT_MS);
+  });
+});
+
+describe("cursor context", () => {
+  const midSentence = { before: "Thanks for the update, I think we should", after: "" };
+
+  it("tells the model to continue a sentence the cursor is inside", () => {
+    const prompt = buildCleanupPrompt("move the launch to friday", {
+      terms: [],
+      field: midSentence,
+    });
+    expect(prompt).toContain("<before_cursor>");
+    expect(prompt).toContain("I think we should");
+    expect(prompt).toMatch(/start with a lowercase letter/);
+    expect(prompt).toMatch(/read-only context/);
+  });
+
+  it("does not ask for lowercase after a finished sentence", () => {
+    const prompt = buildCleanupPrompt("next item", {
+      terms: [],
+      field: { before: "That is done.\n" },
+    });
+    expect(prompt).not.toMatch(/lowercase/);
+  });
+
+  it("detects where a sentence stops", () => {
+    expect(endsMidSentence("I think we should")).toBe(true);
+    expect(endsMidSentence("Hi Aysha,")).toBe(true);
+    expect(endsMidSentence("That is done.")).toBe(false);
+    expect(endsMidSentence('He said "yes."')).toBe(false);
+    expect(endsMidSentence("Line one\n")).toBe(false);
+    expect(endsMidSentence(undefined)).toBe(false);
+  });
+
+  it("uses the window title to tell a Gmail tab from a Slack one", () => {
+    expect(appStyle("chrome", "Inbox (3) - Gmail - Google Chrome")).toBe("email");
+    expect(appStyle("msedge", "general | Slack - Microsoft Edge")).toBe("chat");
+    expect(appStyle("firefox", "ChatGPT — Mozilla Firefox")).toBe("code");
+    // A specific app wins over whatever its title says.
+    expect(appStyle("Code", "Mail merge.ts - Visual Studio Code")).toBe("code");
+    // Free text in a document title is not a site.
+    expect(appStyle("WINWORD", "Mail merge.docx - Word")).toBe("default");
+    const prompt = buildCleanupPrompt("x", {
+      terms: [],
+      appName: "chrome",
+      field: { windowTitle: "Inbox - Gmail" },
+    });
+    expect(prompt).toContain('window "Inbox - Gmail"');
+    expect(prompt).toMatch(/writing an email/);
+  });
+
+  it("sends the model only the text nearest the cursor", () => {
+    const before = `${"old paragraph ".repeat(200)}the nearest words`;
+    const prompt = buildCleanupPrompt("x", { terms: [], field: { before } });
+    expect(prompt).toContain("the nearest words");
+    expect(prompt.length).toBeLessThan(before.length);
+  });
+
+  it("rejects a cleanup that repeats the text before the cursor", () => {
+    const field = { before: "Thanks for the update, I think we should" };
+    expect(
+      judgeCleanup(
+        "move the launch to friday",
+        "Thanks for the update, I think we should move the launch to Friday.",
+        field,
+      ),
+    ).toEqual({ ok: false, reason: "echoed_context" });
+    expect(judgeCleanup("move the launch to friday", "move the launch to Friday.", field)).toEqual({
+      ok: true,
+    });
+  });
+
+  it("allows words that were spoken even if they are also on screen", () => {
+    const field = { before: "the root pass looks good to me" };
+    expect(
+      judgeCleanup("the root pass looks good to me too", "The root pass looks good to me too.", field)
+        .ok,
+    ).toBe(true);
+  });
+
+  it("passes the context to the model", async () => {
+    let userMessage = "";
+    const env = envWith(async (_model, input) => {
+      userMessage = (input as { messages: Array<{ content: string }> }).messages[1]!.content;
+      return { response: "move the launch to Friday" };
+    });
+    const result = await cleanupTranscript(env, "move the launch to friday", [], {
+      field: midSentence,
+    });
+    expect(userMessage).toContain("I think we should");
+    expect(result).toEqual({ text: "move the launch to Friday", formatted: true });
+  });
+});
+
+describe("fitting text to the cursor", () => {
+  it("adds a space after a preceding word", () => {
+    expect(fitToCursor("move it to Friday.", { before: "I think we should" })).toBe(
+      " move it to Friday.",
+    );
+  });
+
+  it("adds no space at the start of a line or after an opening bracket", () => {
+    expect(fitToCursor("Hello.", { before: "Notes:\n" })).toBe("Hello.");
+    expect(fitToCursor("see below", { before: "(" })).toBe("see below");
+    expect(fitToCursor(", and more", { before: "one" })).toBe(", and more");
+  });
+
+  it("adds a space before a following word", () => {
+    expect(fitToCursor("really", { before: "It is ", after: "good" })).toBe("really ");
+  });
+
+  it("drops a period when punctuation already follows", () => {
+    expect(fitToCursor("the new pricing.", { before: "We changed ", after: ", as agreed." })).toBe(
+      "the new pricing",
+    );
+  });
+
+  it("leaves text alone without context", () => {
+    expect(fitToCursor("Hello.", undefined)).toBe("Hello.");
+    expect(fitToCursor("Hello.", {})).toBe("Hello.");
   });
 });

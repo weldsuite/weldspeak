@@ -42,6 +42,12 @@ pub struct Settings {
     /// Language hint. None lets the model detect it.
     pub locale: Option<String>,
 
+    /// Read the text around the cursor and the window title when the hotkey
+    /// goes down, so cleanup continues the sentence, spells names on screen,
+    /// and styles for the site (Wispr Flow–style context awareness). Sent with
+    /// the dictation for cleanup only; never stored.
+    pub use_context: bool,
+
     /// Keep a local history of dictations.
     ///
     /// An organization admin can force this off for everyone; when they do, the
@@ -83,6 +89,7 @@ impl Default for Settings {
             injection: InjectionPreference::Automatic,
             clean_up_text: true,
             locale: None,
+            use_context: true,
             keep_history: true,
             pause_media: default_pause_media(),
             microphone: None,

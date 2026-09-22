@@ -29,10 +29,10 @@ import {
   isWordQuotaExceeded,
   type Entitlement,
 } from "./billing/entitlements.js";
-import { cleanupTranscript } from "./format.js";
+import { cleanupTranscript, fitToCursor } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
 import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
-import type { DictionaryTerm } from "@weldspeak/protocol";
+import type { DictionaryTerm, FieldContext } from "@weldspeak/protocol";
 
 /** Deepgram keyterm budget — keep the list short and unique. */
 const MAX_KEYTERMS = 100;
@@ -175,7 +175,7 @@ export class DictationSession extends DurableObject<Env> {
         await this.#onStart(frame);
         break;
       case "stop":
-        await this.#onStop();
+        await this.#onStop(frame.context);
         break;
       case "cancel":
         this.#cancelled = true;
@@ -378,7 +378,7 @@ export class DictationSession extends DurableObject<Env> {
     }
   }
 
-  async #onStop(): Promise<void> {
+  async #onStop(field: FieldContext | undefined): Promise<void> {
     if (!this.#started || this.#finalizing) return;
     this.#finalizing = true;
 
@@ -410,10 +410,12 @@ export class DictationSession extends DurableObject<Env> {
       : [];
 
     const { text, formatted } = shouldFormat
-      ? await cleanupTranscript(this.env, raw, terms, { appName: this.#appName })
+      ? await cleanupTranscript(this.env, raw, terms, { appName: this.#appName, field })
       : { text: raw, formatted: false };
 
-    this.#send({ type: "result", text, raw, formatted, durationMs });
+    // Spacing and punctuation at the cursor apply whether or not cleanup ran:
+    // dictating mid-sentence should read like typing there would.
+    this.#send({ type: "result", text: fitToCursor(text, field), raw, formatted, durationMs });
 
     // Persistence and metering happen after the result is on the wire: the
     // user has their text, and a slow write must not delay it.

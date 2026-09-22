@@ -27,6 +27,21 @@ export function PrivacyPage() {
           </section>
           <section className="space-y-3">
             <h2 className="font-display text-xl font-semibold tracking-tight">
+              What we see around your cursor
+            </h2>
+            <p>
+              When you start dictating, the desktop app reads the name of the
+              app you are in, the window title, and the text just before and
+              after your cursor (up to about 1,500 and 500 characters). It
+              sends them with that dictation so the cleanup model can continue
+              your sentence and spell names already on screen. This context is
+              used for that one cleanup and is not stored. Password fields are
+              never read. You can turn it off in Settings under &ldquo;Use
+              what&rsquo;s around my cursor&rdquo;.
+            </p>
+          </section>
+          <section className="space-y-3">
+            <h2 className="font-display text-xl font-semibold tracking-tight">
               Transcripts
             </h2>
             <p>

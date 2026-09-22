@@ -29,3 +29,7 @@ pub fn focused_text() -> Option<String> {
 pub fn focused_app_name() -> Option<String> {
     None
 }
+
+pub fn focused_context() -> Option<weldspeak_protocol::stream::FieldContext> {
+    None
+}

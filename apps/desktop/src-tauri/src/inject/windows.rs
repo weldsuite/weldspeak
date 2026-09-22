@@ -10,6 +10,7 @@
 //! the first produces a replacement character.
 
 use anyhow::{anyhow, Result};
+use weldspeak_protocol::stream::{FieldContext, MAX_CONTEXT_AFTER, MAX_CONTEXT_BEFORE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -165,27 +166,29 @@ pub fn focused_text() -> Option<String> {
     focused_text_automation().or_else(focused_text_native)
 }
 
-fn focused_text_automation() -> Option<String> {
+/// Run `read` against the focused UI Automation element.
+///
+/// COM is initialised per call so a short-lived thread leaves it as it found
+/// it; RPC_E_CHANGED_MODE means the thread is already STA, which works for a
+/// client too but must not be uninitialised here. Password fields are never
+/// handed to `read`.
+fn with_focused_element<T>(
+    read: impl FnOnce(&windows::Win32::UI::Accessibility::IUIAutomationElement) -> Option<T>,
+) -> Option<T> {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
     };
-    use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
-        UIA_TextPatternId, UIA_ValuePatternId,
-    };
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 
     unsafe {
-        // Balanced per call so a short-lived watcher thread leaves COM as it
-        // found it. RPC_E_CHANGED_MODE means the thread is already STA, which
-        // works for a client too, but must not be uninitialised here.
         let initialised = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
 
-        let text = (|| {
+        let result = (|| {
             let automation: IUIAutomation =
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
             let element = automation.GetFocusedElement().ok()?;
-            // Never read a password field into memory, let alone learn from it.
+            // Never read a password field into memory, let alone send it.
             if element
                 .CurrentIsPassword()
                 .map(|b| b.as_bool())
@@ -193,35 +196,149 @@ fn focused_text_automation() -> Option<String> {
             {
                 return None;
             }
-
-            if let Ok(pattern) =
-                element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-            {
-                if let Ok(value) = pattern.CurrentValue() {
-                    let value = value.to_string();
-                    if !value.trim().is_empty() {
-                        return Some(value);
-                    }
-                }
-            }
-
-            let pattern = element
-                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-                .ok()?;
-            let text = pattern
-                .DocumentRange()
-                .ok()?
-                .GetText(MAX_FIELD_CHARS)
-                .ok()?;
-            Some(text.to_string())
+            read(&element)
         })();
 
         if initialised {
             CoUninitialize();
         }
+        result
+    }
+}
 
-        text.map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty())
+fn focused_text_automation() -> Option<String> {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId, UIA_ValuePatternId,
+    };
+
+    let text = with_focused_element(|element| unsafe {
+        if let Ok(pattern) =
+            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        {
+            if let Ok(value) = pattern.CurrentValue() {
+                let value = value.to_string();
+                if !value.trim().is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+
+        let pattern = element
+            .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            .ok()?;
+        let text = pattern
+            .DocumentRange()
+            .ok()?
+            .GetText(MAX_FIELD_CHARS)
+            .ok()?;
+        Some(text.to_string())
+    })?;
+
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The text either side of the cursor, and the window title.
+///
+/// With a text pattern (browsers, Word, most Electron apps) the ranges are
+/// taken relative to the caret, clipped to the characters nearest it so a long
+/// document is never copied whole. A plain value field has no caret position,
+/// so its text counts as "before" — the caret is almost always at the end
+/// when someone starts dictating into one.
+pub fn focused_context() -> Option<FieldContext> {
+    let window_title = foreground_window_title();
+    let (before, after) = with_focused_element(|element| unsafe {
+        caret_context(element).or_else(|| {
+            use windows::Win32::UI::Accessibility::{
+                IUIAutomationValuePattern, UIA_ValuePatternId,
+            };
+            let pattern = element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                .ok()?;
+            let value = pattern.CurrentValue().ok()?.to_string();
+            Some((Some(value), None))
+        })
+    })
+    .unwrap_or((None, None));
+
+    FieldContext {
+        before,
+        after,
+        window_title,
+    }
+    .trimmed()
+}
+
+unsafe fn caret_context(
+    element: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+) -> Option<(Option<String>, Option<String>)> {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationTextPattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+        TextUnit_Character, UIA_TextPatternId,
+    };
+
+    let pattern = element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .ok()?;
+    let selections = pattern.GetSelection().ok()?;
+    if selections.Length().ok()? < 1 {
+        return None;
+    }
+    let caret = selections.GetElement(0).ok()?;
+
+    // Collapse a copy onto the caret's start, then reach back.
+    let before = caret.Clone().ok()?;
+    before
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_End,
+            &caret,
+            TextPatternRangeEndpoint_Start,
+        )
+        .ok()?;
+    let _ = before.MoveEndpointByUnit(
+        TextPatternRangeEndpoint_Start,
+        TextUnit_Character,
+        -(MAX_CONTEXT_BEFORE as i32),
+    );
+
+    // Collapse a copy onto the caret's end, then reach forward.
+    let after = caret.Clone().ok()?;
+    after
+        .MoveEndpointByRange(
+            TextPatternRangeEndpoint_Start,
+            &caret,
+            TextPatternRangeEndpoint_End,
+        )
+        .ok()?;
+    let _ = after.MoveEndpointByUnit(
+        TextPatternRangeEndpoint_End,
+        TextUnit_Character,
+        MAX_CONTEXT_AFTER as i32,
+    );
+
+    let read = |range: &windows::Win32::UI::Accessibility::IUIAutomationTextRange| {
+        range
+            .GetText(MAX_FIELD_CHARS)
+            .ok()
+            .map(|text| text.to_string())
+    };
+    Some((read(&before), read(&after)))
+}
+
+fn foreground_window_title() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_invalid() {
+            return None;
+        }
+        let mut buffer = [0u16; 512];
+        let length = GetWindowTextW(window, &mut buffer);
+        if length <= 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buffer[..length as usize]))
     }
 }
 

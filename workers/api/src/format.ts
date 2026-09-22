@@ -12,7 +12,7 @@
  * rules ships the raw transcript instead.
  */
 
-import type { DictionaryTerm } from "@weldspeak/protocol";
+import type { DictionaryTerm, FieldContext } from "@weldspeak/protocol";
 import type { Env } from "./env.js";
 import {
   buildCleanupPrompt,
@@ -25,6 +25,8 @@ import {
 export {
   appStyle,
   buildCleanupPrompt,
+  endsMidSentence,
+  fitToCursor,
   judgeCleanup,
   looksLikeAssistantReply,
   stripModelChatter,
@@ -60,6 +62,8 @@ export interface CleanupResult {
 export interface CleanupOptions {
   /** Focused application, used as a style hint (code, email, chat). */
   appName?: string | null;
+  /** Text around the cursor and the window title, read at hotkey-down. */
+  field?: FieldContext;
   /** Override the length-scaled deadline; tests use a short one. */
   timeoutMs?: number;
 }
@@ -124,7 +128,11 @@ export async function cleanupTranscript(
           { role: "system", content: SYSTEM_PROMPT },
           {
             role: "user",
-            content: buildCleanupPrompt(trimmed, { terms, appName: options.appName }),
+            content: buildCleanupPrompt(trimmed, {
+              terms,
+              appName: options.appName,
+              field: options.field,
+            }),
           },
         ],
         // Cleanup is a copy with corrections, not creative writing: greedy
@@ -147,7 +155,7 @@ export async function cleanupTranscript(
   if (output === null || output.truncated) return { text: trimmed, formatted: false };
 
   const cleaned = stripModelChatter(output.text);
-  if (!judgeCleanup(trimmed, cleaned).ok) {
+  if (!judgeCleanup(trimmed, cleaned, options.field).ok) {
     return { text: trimmed, formatted: false };
   }
 

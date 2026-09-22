@@ -61,6 +61,8 @@ pub struct AppState {
     pub media: Mutex<media::MediaPause>,
     /// Settings asked for a different microphone during a dictation.
     pub mic_dirty: AtomicBool,
+    /// Cursor context read at hotkey-down, waiting to ride on `stop`.
+    pub field_context: Mutex<Option<weldspeak_protocol::FieldContext>>,
 }
 
 impl Default for AppState {
@@ -76,6 +78,7 @@ impl Default for AppState {
             last_transcript: Mutex::new(None),
             media: Mutex::new(media::MediaPause::default()),
             mic_dirty: AtomicBool::new(false),
+            field_context: Mutex::new(None),
         }
     }
 }
