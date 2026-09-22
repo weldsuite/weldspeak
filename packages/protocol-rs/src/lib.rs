@@ -13,6 +13,6 @@ pub use audio::{
     PREROLL_FRAMES, PREROLL_MS, SAMPLE_RATE,
 };
 pub use stream::{
-    decode_token_subprotocol, encode_token_subprotocol, ClientFrame, ErrorCode, ServerEvent,
-    WS_SUBPROTOCOL_PREFIX,
+    decode_token_subprotocol, encode_token_subprotocol, ClientFrame, ErrorCode, FieldContext,
+    ServerEvent, WS_SUBPROTOCOL_PREFIX,
 };

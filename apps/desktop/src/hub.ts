@@ -21,6 +21,7 @@ interface Settings {
   injection: "automatic" | "alwaysType" | "alwaysPaste";
   cleanUpText: boolean;
   locale: string | null;
+  useContext: boolean;
   keepHistory: boolean;
   pauseMedia: boolean;
   microphone: string | null;
@@ -111,6 +112,7 @@ const PREVIEW = {
     injection: "automatic",
     cleanUpText: true,
     locale: null,
+    useContext: true,
     keepHistory: true,
     pauseMedia: true,
     microphone: null,
@@ -839,6 +841,12 @@ function settingsPage(): string {
           option("alwaysPaste", "Pasting it", s.injection === "alwaysPaste"),
         ].join(""),
         "Automatic pastes the whole dictation at once and puts your clipboard back. Choose typing for apps that block paste.",
+      )}
+      ${switchSetting(
+        "Use what’s around my cursor",
+        "useContext",
+        s.useContext,
+        "Reads the text next to your cursor and the window title so dictation continues your sentence, spells names on screen, and fits the app. Used for cleanup only, never stored.",
       )}
     </section>
 

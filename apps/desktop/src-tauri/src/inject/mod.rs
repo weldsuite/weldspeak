@@ -125,6 +125,15 @@ pub fn focused_text() -> Option<String> {
     platform::focused_text()
 }
 
+/// Text either side of the cursor and the focused window's title.
+///
+/// Wispr Flow–style context for cleanup: continuing a sentence, spelling
+/// names already on screen, telling a Gmail tab from a Slack one. May block
+/// on a slow app, so call it off the UI thread on Windows and with a deadline.
+pub fn focused_context() -> Option<weldspeak_protocol::stream::FieldContext> {
+    platform::focused_context()
+}
+
 /// Name of the frontmost application ("Code", "Slack", "Outlook").
 ///
 /// Sent with each dictation so cleanup can match the destination, the way

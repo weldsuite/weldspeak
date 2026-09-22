@@ -181,6 +181,18 @@ The `workers.dev` hostname is kept enabled alongside the custom domains, so
 there is still a way in if a domain is mid-migration or a certificate is
 provisioning.
 
+Every push to `main` releases everything through the `Desktop installers`
+workflow:
+
+1. It builds the dashboard, applies D1 migrations, and deploys the Worker.
+2. It builds the installers.
+3. It publishes the updater feed, but only after the Worker is live, so
+   installed apps never update onto an older API.
+
+The deploy needs a `CLOUDFLARE_API_TOKEN` repository secret. Create it with
+the "Edit Cloudflare Workers" template plus D1 Edit on the WeldSuite account.
+Without the secret, the deploy job fails and the updater feed is held back.
+
 ### Choosing the cleanup model
 
 `CLEANUP_MODEL` is `@cf/google/gemma-4-26b-a4b-it`. Cleanup works like Wispr
