@@ -4,11 +4,16 @@
 //! everywhere:
 //!
 //!   - **Synthesising keystrokes** types the characters one at a time. It
-//!     leaves the clipboard alone, which users notice, but it is linear in the
-//!     length of the text and becomes visibly slow past a paragraph or so.
+//!     leaves the clipboard alone, but the text visibly streams in word by
+//!     word, and editors with autocomplete or auto-indent react to every key.
 //!   - **Paste** puts the text on the clipboard and sends the paste shortcut.
-//!     It is instant at any length, but it clobbers whatever the user had
-//!     copied, so the previous contents have to be saved and put back.
+//!     The whole dictation lands in one sweep at any length, but it clobbers
+//!     whatever the user had copied, so the previous contents are saved and
+//!     put back.
+//!
+//! Automatic mode pastes, as Wispr Flow does: text appearing all at once is
+//! what makes dictation feel instant. Typing stays available as a setting for
+//! the odd app that blocks paste.
 //!
 //! The choice is a policy decision that has nothing to do with any particular
 //! operating system, so it lives here where it can be tested, while the actual
@@ -23,13 +28,6 @@ pub enum Method {
     Paste,
 }
 
-/// Length past which typing character-by-character becomes noticeably slow.
-///
-/// Synthesised keystrokes need a small delay between them for applications to
-/// keep up; a couple of thousand characters is where the accumulated delay
-/// stops feeling instant and starts looking like the app has hung.
-pub const TYPING_LENGTH_LIMIT: usize = 2_000;
-
 /// Delay between setting the clipboard and sending the paste shortcut.
 ///
 /// Some applications — Electron ones especially — read the clipboard
@@ -38,11 +36,13 @@ pub const CLIPBOARD_SETTLE_MS: u64 = 30;
 
 /// Delay before restoring the user's previous clipboard contents.
 ///
-/// Restoring too eagerly races the paste and puts the old text in instead. This
-/// is generous on purpose: the cost of waiting is that a fast Cmd-V within
-/// 150 ms pastes the dictation, while the cost of not waiting is pasting the
-/// wrong thing entirely.
-pub const CLIPBOARD_RESTORE_MS: u64 = 150;
+/// Restoring too eagerly races the paste and puts the old text in instead.
+/// Browsers and Electron apps read the clipboard asynchronously and can take a
+/// few hundred milliseconds under load, so this is generous on purpose: the
+/// cost of waiting is that a fast Cmd-V within the window pastes the
+/// dictation, while the cost of not waiting is pasting the wrong thing
+/// entirely.
+pub const CLIPBOARD_RESTORE_MS: u64 = 400;
 
 /// A decision about how to deliver `text`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,7 @@ pub struct Plan {
 /// User preference for delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Preference {
-    /// Choose per dictation: type short text, paste long text.
+    /// Paste the whole dictation in one sweep, restoring the clipboard.
     #[default]
     Automatic,
     /// Always type, never touch the clipboard.
@@ -74,14 +74,7 @@ pub enum Preference {
 pub fn plan(text: &str, preference: Preference) -> Plan {
     let method = match preference {
         Preference::AlwaysType => Method::Type,
-        Preference::AlwaysPaste => Method::Paste,
-        Preference::Automatic => {
-            if text.chars().count() > TYPING_LENGTH_LIMIT {
-                Method::Paste
-            } else {
-                Method::Type
-            }
-        }
+        Preference::AlwaysPaste | Preference::Automatic => Method::Paste,
     };
 
     Plan {
@@ -132,42 +125,22 @@ mod tests {
     }
 
     #[test]
-    fn short_text_is_typed_and_leaves_the_clipboard_alone() {
-        let plan = plan("The weld looks good.", Preference::Automatic);
-
-        assert_eq!(plan.method, Method::Type);
-        assert!(!plan.preserve_clipboard);
-    }
-
-    #[test]
-    fn long_text_is_pasted_because_typing_it_would_crawl() {
-        let plan = plan(&text_of(TYPING_LENGTH_LIMIT + 1), Preference::Automatic);
-
-        assert_eq!(plan.method, Method::Paste);
-        assert!(
-            plan.preserve_clipboard,
-            "the user's clipboard must be restored"
-        );
-    }
-
-    #[test]
-    fn the_threshold_counts_characters_not_bytes() {
-        // Accented characters and emoji are multi-byte; counting bytes would
-        // switch to pasting far earlier than intended for non-English dictation.
-        let accented = "é".repeat(TYPING_LENGTH_LIMIT - 1);
-        assert!(
-            accented.len() > TYPING_LENGTH_LIMIT,
-            "precondition: multi-byte"
-        );
-
-        assert_eq!(plan(&accented, Preference::Automatic).method, Method::Type);
+    fn automatic_pastes_in_one_sweep_and_restores_the_clipboard() {
+        // Even a short sentence is pasted: typed keystrokes stream in visibly
+        // and trip autocomplete in editors.
+        for text in ["The weld looks good.".to_string(), text_of(50_000)] {
+            let plan = plan(&text, Preference::Automatic);
+            assert_eq!(plan.method, Method::Paste);
+            assert!(
+                plan.preserve_clipboard,
+                "the user's clipboard must be restored"
+            );
+        }
     }
 
     #[test]
     fn preferences_override_the_automatic_choice() {
-        let long = text_of(TYPING_LENGTH_LIMIT + 100);
-        assert_eq!(plan(&long, Preference::AlwaysType).method, Method::Type);
-
+        assert_eq!(plan("short", Preference::AlwaysType).method, Method::Type);
         assert_eq!(plan("short", Preference::AlwaysPaste).method, Method::Paste);
     }
 

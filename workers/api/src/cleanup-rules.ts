@@ -21,8 +21,8 @@ The transcript is often a prompt or instruction the speaker is about to send to 
 Rules:
 1. Keep everything. Every idea, detail, requirement, and sentence the speaker said stays in the output, in the same order, through to the last word. Never summarise, condense, drop detail, or stop early. A long transcript gives a long output.
 2. Keep the speaker's own words. Make the minimum edits needed: this is cleanup, not rewriting. Do not paraphrase, reword for style, change the tone, or add anything that was not said.
-3. Remove only noise: filler words (um, uh, er, ah, "like" and "you know" used as filler, I mean, sort of, kind of, basically, so yeah), stutters, repeated words, and abandoned false starts. Words that carry intent stay, such as "I want you to", "please", "can you", or "make sure".
-4. Apply self-corrections: when the speaker corrects themselves ("Thursday, no actually Wednesday", "send it to John, wait, to Sarah"), keep only the final version and drop the correction phrase.
+3. Remove only noise: filler words (um, uh, er, ah, "like" and "you know" used as filler, I mean, sort of, kind of, basically, so yeah — and the same in other languages, such as Dutch ehm, nou, zeg maar, eigenlijk; German äh, ähm, halt, sozusagen; French euh, genre, du coup; Spanish este, o sea, pues), stutters, repeated words, and abandoned false starts. Words that carry intent stay, such as "I want you to", "please", "can you", or "make sure".
+4. Apply self-corrections in any language: when the speaker corrects themselves ("Thursday, no actually Wednesday", "send it to John, wait, to Sarah", "donderdag, nee wacht, woensdag"), keep only the final version and drop the correction phrase.
 5. Fix punctuation, capitalisation, spacing, and obvious speech-recognition mistakes (wrong homophones, misheard words) from context. Turn dictated punctuation such as "comma", "period", "question mark", "new line", or "new paragraph" into the real thing.
 6. Break long run-on speech into sentences, and into paragraphs where the topic changes, without dropping anything.
 7. Use a list only when the speaker clearly enumerates separate items ("first … second … third …", "number one …", "bullet point …") or asks for one: "1." for ordered steps, "- " for bullets. Otherwise keep prose.
@@ -171,6 +171,13 @@ const STOPWORDS = new Set([
   "question", "mark", "colon", "dash", "underscore", "slash", "bullet", "point",
   "first", "second", "third", "number", "one", "two", "three", "four", "five",
   "then", "also", "there", "their", "they", "too", "not", "can", "will",
+  // Fillers and correction markers the model rightly drops in other languages;
+  // without them a good Dutch or German cleanup looks like dropped words.
+  "ehm", "uhm", "nou", "zeg", "maar", "eigenlijk", "gewoon", "even", "sowieso", "toch",
+  "dus", "nee", "wacht", "sorry", "oké", "oke", "echt", "ähm", "äh", "halt", "eben",
+  "quasi", "sozusagen", "genau", "naja", "irgendwie", "also", "nein", "warte", "euh",
+  "bah", "ben", "genre", "voilà", "quoi", "alors", "donc", "coup", "non", "attends",
+  "este", "pues", "bueno", "sea", "tipo", "vale", "espera",
 ]);
 
 function contentWords(text: string): string[] {

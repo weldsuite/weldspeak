@@ -119,6 +119,23 @@ const CASES: Case[] = [
     },
   },
   {
+    id: "dutch-prompt",
+    raw: "ehm oké dus ik wil eigenlijk dat je de login pagina ombouwt zodat hij eerst het apparaat token controleert en zeg maar alleen terugvalt op de clerk sessie als er geen token is en laat de foutmeldingen precies hetzelfde want de desktop app matcht daarop",
+    appName: "Cursor",
+    expect: {
+      include: ["login", "apparaat", "clerk", "foutmeldingen", "desktop app"],
+      exclude: ["ehm", "zeg maar", "I want", "login page"],
+    },
+  },
+  {
+    id: "german-correction",
+    raw: "äh wir treffen uns am donnerstag nein warte am mittwoch nach dem mittagessen im büro",
+    expect: {
+      include: ["Mittwoch", "Mittagessen", "Büro"],
+      exclude: ["Donnerstag", "äh", "Wednesday"],
+    },
+  },
+  {
     id: "long-prompt",
     raw: "alright so here's the context um we have a dictation app that runs on windows and mac and the cleanup step keeps cutting off the end of long prompts so what i need you to do is first figure out where the text is getting truncated it could be the token limit it could be the deadline or it could be the validation that decides whether to ship the cleaned text or the raw transcript uh second i want a benchmark that runs the actual production prompt against a bunch of realistic dictations including really long ones like this one and reports for each model how often the output is accepted and how long it takes and third once we know which model is best switch the production config over to it but keep the fallback behavior where if anything goes wrong we just ship the raw transcript because losing someone's words is way worse than leaving in a few ums and one more thing make sure the output still reads like me i don't want it rewritten into corporate speak or summarized i just want the fillers gone and the punctuation fixed and that's basically it thanks",
     appName: "Claude",
