@@ -19,7 +19,7 @@ export default defineConfig({
           // test/clerk-stub.ts is bypassed and the suite hits the real API.
           NODE_ENV: "test",
           APP_URL: "http://localhost:5173",
-          CLEANUP_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
+          CLEANUP_MODEL: "@cf/google/gemma-4-26b-a4b-it",
           STT_MODEL: "@cf/deepgram/nova-3",
           CLERK_SECRET_KEY: "sk_test_fake",
           CLERK_PUBLISHABLE_KEY: "pk_test_fake",

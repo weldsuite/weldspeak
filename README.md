@@ -183,10 +183,27 @@ provisioning.
 
 ### Choosing the cleanup model
 
-`CLEANUP_MODEL` is `@cf/meta/llama-4-scout-17b-16e-instruct`. It clears the
-2.5 s cleanup deadline with room to spare, follows rewrite instructions well,
-and thinking is turned off on the request so a reasoning trace cannot leak into
-the inserted text.
+`CLEANUP_MODEL` is `@cf/google/gemma-4-26b-a4b-it`. Cleanup works like Wispr
+Flow's: a literal pass that removes fillers, applies self-corrections, fixes
+punctuation and misheard words, and otherwise keeps every word, never
+condensing or answering the dictation. The focused app's name is sent as a
+style hint (code editor / AI chat, email, chat).
+
+Any output that looks shortened is rejected and the raw transcript ships
+instead. That covers missing content words, a missing tail, `finish_reason:
+"length"`, or text much longer than the input. The deadline scales with length,
+from 2.5 s up to 10 s.
+
+Compare models with the production prompt and rules:
+
+```
+pnpm --filter @weldspeak/api exec node --experimental-strip-types scripts/bench-cleanup.ts [model ...]
+```
+
+In the September 2026 run, Gemma 4 26B shipped 100% of cases, including a
+~1,300-character AI prompt in about 3 s. Llama 4 Scout also shipped 100% but
+took about 4.6 s on the long prompt. GLM-5.3-flash and Qwen3-30B leak or return
+only reasoning. Mistral Small rejects `chat_template_kwargs`.
 
 The glossary still matters for the recognizer: with `Inconel 625` in
 `dictionary_terms`, keyterm boost yields the term before cleanup even runs.

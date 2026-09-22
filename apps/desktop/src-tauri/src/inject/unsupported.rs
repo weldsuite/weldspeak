@@ -25,3 +25,7 @@ pub fn send_paste_shortcut() -> Result<()> {
 pub fn focused_text() -> Option<String> {
     None
 }
+
+pub fn focused_app_name() -> Option<String> {
+    None
+}

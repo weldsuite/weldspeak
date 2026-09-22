@@ -7,7 +7,7 @@ interface __BaseEnv_Env {
 	AI: Ai;
 	ASSETS: Fetcher;
 	APP_URL: "http://localhost:5173";
-	CLEANUP_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct";
+	CLEANUP_MODEL: "@cf/google/gemma-4-26b-a4b-it";
 	STT_MODEL: "@cf/deepgram/nova-3";
 	DICTATION: DurableObjectNamespace<import("./src/index").DictationSession>;
 }

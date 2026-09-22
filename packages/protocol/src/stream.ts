@@ -29,7 +29,10 @@ export interface StartFrame {
    * for the cleanup pass.
    */
   keyterms?: string[];
-  /** Focused application, for history and diagnostics. Never used for routing. */
+  /**
+   * Focused application, for history and as a cleanup style hint (code
+   * editor, email, chat). Never used for routing or authorization.
+   */
   appName?: string | null;
   /** Run the cleanup pass. When false the raw transcript is returned as-is. */
   format?: boolean;
