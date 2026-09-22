@@ -1,10 +1,18 @@
+# Releases everything from main at once: the API Worker (which also serves the
+# web dashboard) and the desktop installers.
+#
 # Builds installable desktop apps. You do not need Rust or Visual Studio on
 # your own machine: GitHub's Windows and macOS runners already have them.
 #
 # Run from the Actions tab (Run workflow) or push a tag like v0.1.0.
 # The .exe / .dmg show up as workflow artifacts. Tags also get a GitHub Release.
-# Pushes to main also refresh the rolling `desktop` release that the
-# in-app updater reads.
+# Pushes to main also deploy the Worker and refresh the rolling `desktop`
+# release that the in-app updater reads. The updater feed waits for the
+# Worker, so installed apps never update onto an API that lacks what they need.
+#
+# The Worker deploy needs the CLOUDFLARE_API_TOKEN repository secret: a
+# Cloudflare API token with "Edit Cloudflare Workers" and "D1 Edit" on the
+# WeldSuite account.
 
 name: Desktop installers
 
@@ -112,9 +120,47 @@ jobs:
           files: ${{ matrix.artifact }}
           generate_release_notes: true
 
+  api:
+    name: API and dashboard
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: cfcf560df8dc675d15337abcfbf6d9bd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the Cloudflare token
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Add the CLOUDFLARE_API_TOKEN repository secret to deploy the API."
+            exit 1
+          fi
+
+      # The Worker serves the dashboard from this build; .env.production
+      # supplies the live Clerk publishable key.
+      - run: pnpm --filter @weldspeak/web build
+
+      # Schema first: new code may read columns the old schema lacks, while
+      # migrations here are additive and safe under the running version.
+      - name: Apply D1 migrations
+        run: pnpm --filter @weldspeak/api exec wrangler d1 migrations apply weldspeak --remote
+
+      - name: Deploy Worker
+        run: pnpm --filter @weldspeak/api exec wrangler deploy --message "main ${GITHUB_SHA::7}"
+
   publish:
     name: Rolling updater release
-    needs: bundle
+    needs: [bundle, api]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
