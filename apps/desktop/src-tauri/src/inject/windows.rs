@@ -151,8 +151,73 @@ pub fn focused_app_name() -> Option<String> {
     }
 }
 
-/// Text in the focused control, if this is a native field we can read.
+/// Longest field text read back; enough to hold the dictation and the edit
+/// around it without copying a whole document on every poll.
+const MAX_FIELD_CHARS: i32 = 20_000;
+
+/// Text in the focused control.
+///
+/// UI Automation first: it reads browsers, Office, and Electron apps, where
+/// nearly all dictation lands. `WM_GETTEXT` only sees classic Win32 edit
+/// controls such as Notepad's, and stays as the fallback. Call this off the
+/// UI thread — UI Automation calls into other processes and can block.
 pub fn focused_text() -> Option<String> {
+    focused_text_automation().or_else(focused_text_native)
+}
+
+fn focused_text_automation() -> Option<String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
+        UIA_TextPatternId, UIA_ValuePatternId,
+    };
+
+    unsafe {
+        // Balanced per call so a short-lived watcher thread leaves COM as it
+        // found it. RPC_E_CHANGED_MODE means the thread is already STA, which
+        // works for a client too, but must not be uninitialised here.
+        let initialised = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+
+        let text = (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+            let element = automation.GetFocusedElement().ok()?;
+            // Never read a password field into memory, let alone learn from it.
+            if element.CurrentIsPassword().map(|b| b.as_bool()).unwrap_or(true) {
+                return None;
+            }
+
+            if let Ok(pattern) =
+                element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            {
+                if let Ok(value) = pattern.CurrentValue() {
+                    let value = value.to_string();
+                    if !value.trim().is_empty() {
+                        return Some(value);
+                    }
+                }
+            }
+
+            let pattern = element
+                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+                .ok()?;
+            let text = pattern.DocumentRange().ok()?.GetText(MAX_FIELD_CHARS).ok()?;
+            Some(text.to_string())
+        })();
+
+        if initialised {
+            CoUninitialize();
+        }
+
+        text.map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    }
+}
+
+fn focused_text_native() -> Option<String> {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageW,

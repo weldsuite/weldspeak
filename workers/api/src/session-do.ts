@@ -60,6 +60,21 @@ export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
   return out;
 }
 
+/**
+ * Recognition language for Deepgram.
+ *
+ * With no language set, Nova-3 assumes English, and streaming has no language
+ * detection, so "Detect automatically" used to mean "English only". `multi`
+ * is Nova-3's code-switching mode: it recognises English, Dutch, German,
+ * French, Spanish, Portuguese, Italian, Russian, Hindi, and Japanese, even
+ * mixed within one sentence, and still honours keyterms. Other languages
+ * need to be chosen explicitly.
+ */
+export function recognitionLanguage(locale: string | null | undefined): string {
+  const chosen = locale?.trim();
+  return chosen ? chosen : "multi";
+}
+
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
 export interface SessionIdentity {
   userId: string;
@@ -243,6 +258,8 @@ export class DictationSession extends DurableObject<Env> {
    * finals that discard acoustic context for the next phrase.
    */
   async #connectUpstream(frame: StartFrame, keyterms: string[]): Promise<void> {
+    const language = recognitionLanguage(frame.locale);
+    const english = language.startsWith("en");
     const response = (await this.env.AI.run(
       this.env.STT_MODEL as never,
       {
@@ -252,15 +269,15 @@ export class DictationSession extends DurableObject<Env> {
         interim_results: "true",
         punctuate: "true",
         smart_format: "true",
-        // Spoken "period" / "comma" → punctuation (Deepgram dictation mode).
-        dictation: "true",
-        // Numerals: "twenty five" → "25" — useful for weld specs and sizes.
-        numerals: "true",
+        // Spoken "period" / "comma" → punctuation, and "twenty five" → "25".
+        // Both are English-only in Deepgram; for other languages the cleanup
+        // pass converts dictated punctuation instead.
+        ...(english ? { dictation: "true", numerals: "true" } : {}),
         // Keep fillers out of the raw transcript; cleanup still strips hedges.
         filler_words: "false",
         // Client issues CloseStream on hotkey-up; do not auto-finalize on pause.
         endpointing: "false",
-        ...(frame.locale ? { language: frame.locale } : {}),
+        language,
         ...(keyterms.length > 0 ? { keyterm: keyterms } : {}),
       } as never,
       { websocket: true } as never,

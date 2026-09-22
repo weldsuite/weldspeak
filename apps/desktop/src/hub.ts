@@ -71,7 +71,7 @@ interface UpdateInfo {
 type UpdatePhase = "checking" | "ready" | "installing" | "latest" | "error";
 
 const LOCALES: Array<[string, string]> = [
-  ["", "Detect automatically"],
+  ["", "Detect automatically (multilingual)"],
   ["en", "English"],
   ["nl", "Dutch"],
   ["de", "German"],
@@ -838,7 +838,7 @@ function settingsPage(): string {
           option("alwaysType", "Typing it", s.injection === "alwaysType"),
           option("alwaysPaste", "Pasting it", s.injection === "alwaysPaste"),
         ].join(""),
-        "Typing works everywhere; pasting is faster for long text.",
+        "Automatic pastes the whole dictation at once and puts your clipboard back. Choose typing for apps that block paste.",
       )}
     </section>
 

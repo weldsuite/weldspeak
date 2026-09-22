@@ -15,9 +15,12 @@ use crate::AppState;
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-const WATCH_FOR: Duration = Duration::from_millis(16_000);
-const SETTLE: Duration = Duration::from_millis(1_800);
+/// How long after an insertion an edit still counts as correcting it.
+const WATCH_FOR: Duration = Duration::from_secs(30);
+/// Quiet time after the last edit before the correction is judged final.
+const SETTLE: Duration = Duration::from_millis(2_500);
 const POLL: Duration = Duration::from_millis(12);
+const FIELD_POLL: Duration = Duration::from_millis(400);
 
 /// Drop an in-flight watch, e.g. when the next dictation starts.
 pub fn invalidate() {
@@ -39,13 +42,23 @@ pub fn after_inject(app: &AppHandle, inserted: String) {
         .ok();
 }
 
+/// Follow the field the dictation went into until the user stops editing it.
+///
+/// The first reading that contains the dictation is the baseline: the field
+/// as it was the moment the paste landed. Diffing later readings against it
+/// isolates exactly what the user changed, wherever the cursor was. Keystrokes
+/// are a fallback for fields that cannot be read at all.
 fn watch_loop(app: AppHandle, inserted: String, gen: u64) {
     let started = Instant::now();
+    let target_app = crate::inject::focused_app_name();
+    let needle = inserted.trim().to_string();
+
     let mut last_edit = None;
     let mut backspaces = 0usize;
     let mut typed = String::new();
     let mut undid = false;
     let mut prev_keys = [false; 256];
+    let mut baseline = None::<String>;
     let mut last_field = None::<String>;
     let mut last_field_at = Instant::now();
     let mut field_poll_at = Instant::now();
@@ -69,13 +82,25 @@ fn watch_loop(app: AppHandle, inserted: String, gen: u64) {
             last_edit = Some(Instant::now());
         }
 
-        if field_poll_at.elapsed() >= Duration::from_millis(400) {
+        if field_poll_at.elapsed() >= FIELD_POLL {
             field_poll_at = Instant::now();
+            // Switching apps ends the correction window: whatever field has
+            // focus now is not the one the dictation went into.
+            if crate::inject::focused_app_name() != target_app {
+                break;
+            }
             if let Some(field) = read_field(&app) {
+                if baseline.is_none() && field.contains(&needle) {
+                    baseline = Some(field.clone());
+                }
                 if last_field.as_deref() != Some(&field) {
+                    let edited = match baseline.as_deref() {
+                        Some(base) => base != field,
+                        None => !field.contains(&needle),
+                    };
                     last_field = Some(field);
                     last_field_at = Instant::now();
-                    if last_edit.is_some() || field_looks_edited(&inserted, last_field.as_deref()) {
+                    if edited {
                         last_edit = Some(Instant::now());
                     }
                 }
@@ -91,24 +116,19 @@ fn watch_loop(app: AppHandle, inserted: String, gen: u64) {
         std::thread::sleep(POLL);
     }
 
-    if GENERATION.load(Ordering::Relaxed) != gen {
+    if GENERATION.load(Ordering::Relaxed) != gen || last_edit.is_none() {
         return;
     }
 
-    let mut found = Vec::new();
-    if let Some(correction) = learn::from_keystrokes(&inserted, backspaces, &typed, undid) {
-        found.push(correction);
-    }
-    if let Some(field) = last_field.or_else(|| read_field(&app)) {
-        for correction in learn::from_edit(&inserted, &field) {
-            if !found
-                .iter()
-                .any(|existing| existing.heard.eq_ignore_ascii_case(&correction.heard))
-            {
-                found.push(correction);
-            }
-        }
-    }
+    let found = match (baseline.as_deref(), last_field.as_deref()) {
+        // The field was readable: its diff is the truth, and keystrokes (which
+        // cannot tell where the cursor was) would only add guesses.
+        (Some(before), Some(after)) => learn::from_field_change(&inserted, before, after),
+        (None, Some(after)) => learn::from_edit(&inserted, after),
+        _ => learn::from_keystrokes(&inserted, backspaces, &typed, undid)
+            .into_iter()
+            .collect(),
+    };
 
     if found.is_empty() {
         return;
@@ -219,19 +239,22 @@ fn windows_poll_keys(prev: &mut [bool; 256]) -> (DownNow, String) {
     (now, typed)
 }
 
-fn field_looks_edited(inserted: &str, field: Option<&str>) -> bool {
-    let Some(field) = field else {
-        return false;
-    };
-    !field.contains(inserted.trim())
-}
-
 fn read_field(app: &AppHandle) -> Option<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _ = app.run_on_main_thread(move || {
-        let _ = tx.send(crate::inject::focused_text());
-    });
-    rx.recv_timeout(Duration::from_millis(200)).ok().flatten()
+    // UI Automation calls into other processes and can stall; it belongs on
+    // this watcher thread, never on the UI thread.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        crate::inject::focused_text()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = app.run_on_main_thread(move || {
+            let _ = tx.send(crate::inject::focused_text());
+        });
+        rx.recv_timeout(Duration::from_millis(200)).ok().flatten()
+    }
 }
 
 fn persist(app: &AppHandle, corrections: Vec<Correction>, terms: Vec<String>) {
@@ -260,7 +283,7 @@ fn persist(app: &AppHandle, corrections: Vec<Correction>, terms: Vec<String>) {
     }
 
     if let Some((_, meant)) = uploaded.iter().find(|(heard, _)| !heard.is_empty()) {
-        crate::overlay::show_notice(app, &format!("Learned {meant}"));
+        crate::overlay::show_notice(app, &format!("Added “{meant}” to your dictionary"));
     }
 
     let app = app.clone();
