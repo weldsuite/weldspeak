@@ -6,19 +6,19 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-/// Listening pill palette: ink-black capsule, white bars — quiet enough to sit
-/// over any app without drawing the eye away from the text being written.
+/// Listening pill palette, taken from Wispr Flow's pill stylesheet so the two
+/// read the same on screen.
 pub mod theme {
-    /// Pill fill `#111210`
-    pub const OVERLAY_BG_RGB: (u8, u8, u8) = (0x11, 0x12, 0x10);
-    /// Hairline around the pill so it separates from dark backgrounds `#3a3c37`
-    pub const OVERLAY_BORDER_RGB: (u8, u8, u8) = (0x3a, 0x3c, 0x37);
-    /// Waveform while listening `#faf9f6`
-    pub const OVERLAY_LISTEN_RGB: (u8, u8, u8) = (0xfa, 0xf9, 0xf6);
-    /// Bars while the transcript is being cleaned up `#7d8279`
-    pub const OVERLAY_MUTED_RGB: (u8, u8, u8) = (0x7d, 0x82, 0x79);
-    /// Notice text `#faf9f6`
-    pub const OVERLAY_TEXT_RGB: (u8, u8, u8) = (0xfa, 0xf9, 0xf6);
+    /// Pill fill: pure black (`--shade-black`).
+    pub const OVERLAY_BG_RGB: (u8, u8, u8) = (0x00, 0x00, 0x00);
+    /// 1 px rim that lifts the pill off dark backgrounds (`--vast-900`).
+    pub const OVERLAY_BORDER_RGB: (u8, u8, u8) = (0x30, 0x30, 0x2f);
+    /// Bars while the mic is live: white.
+    pub const OVERLAY_LISTEN_RGB: (u8, u8, u8) = (0xff, 0xff, 0xff);
+    /// Bars while thinking: 40 % white over the black fill.
+    pub const OVERLAY_MUTED_RGB: (u8, u8, u8) = (0x66, 0x66, 0x66);
+    /// Notice text.
+    pub const OVERLAY_TEXT_RGB: (u8, u8, u8) = (0xff, 0xff, 0xff);
 }
 
 /// Notify the Hub webview that the account is signed in.

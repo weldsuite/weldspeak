@@ -93,6 +93,10 @@ export class DictationSession extends DurableObject<Env> {
   #partial = "";
   /** Finalized segments, joined to form the transcript. */
   #finals: string[] = [];
+  /** The recognizer has said it is finished: `Metadata` arrived or it closed. */
+  #upstreamDone = false;
+  /** When the recognizer last sent anything, for the post-stop quiet check. */
+  #lastUpstreamAt = 0;
 
   override async fetch(request: Request): Promise<Response> {
     const identityHeader = request.headers.get("X-WeldSpeak-Identity");
@@ -282,6 +286,7 @@ export class DictationSession extends DurableObject<Env> {
 
     upstream.addEventListener("message", (event) => this.#onUpstreamMessage(event.data));
     upstream.addEventListener("close", () => {
+      this.#upstreamDone = true;
       // Losing the upstream after `stop` is normal — it closes once it has sent
       // the final. Losing it mid-utterance is not.
       if (!this.#finalizing && !this.#cancelled && this.#started) {
@@ -313,6 +318,13 @@ export class DictationSession extends DurableObject<Env> {
     try {
       message = JSON.parse(data);
     } catch {
+      return;
+    }
+
+    this.#lastUpstreamAt = Date.now();
+    // Deepgram's last word after CloseStream: every final has been sent.
+    if (message.type === "Metadata") {
+      if (this.#finalizing) this.#upstreamDone = true;
       return;
     }
 
@@ -394,17 +406,21 @@ export class DictationSession extends DurableObject<Env> {
   }
 
   /**
-   * Wait for the recognizer's last final after `CloseStream`.
+   * Wait for the recognizer to finish after `CloseStream`.
    *
-   * Resolves as soon as a final arrives. The timeout is only a backstop for a
-   * recognizer that never flushes, so the tail of the last word is not cut.
+   * Done when it says so (`Metadata`, or the socket closes), or once a final
+   * has arrived and the stream has then been quiet for `quietMs`. Returning on
+   * the *first* final, as this used to, dropped the tail whenever a normal
+   * final was already in flight when the user let go: that final satisfied the
+   * wait and the flushed last words arrived after the result had gone.
    */
-  async #awaitFinalTranscript(timeoutMs = 1_200): Promise<void> {
+  async #awaitFinalTranscript(timeoutMs = 2_000, quietMs = 300): Promise<void> {
     const before = this.#finals.length;
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-      if (this.#finals.length > before) return;
+      if (this.#upstreamDone) return;
+      if (this.#finals.length > before && Date.now() - this.#lastUpstreamAt >= quietMs) return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
