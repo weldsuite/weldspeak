@@ -144,6 +144,38 @@ export async function listOrgMemberships(
   }));
 }
 
+/**
+ * Attach display names to the memberships carried in a desktop token.
+ *
+ * The token stays the authority on *which* orgs and roles apply — an org the
+ * user joined after the token was minted is not added here, and one they left
+ * is not dropped; the next refresh handles both. Clerk only supplies names. If
+ * Clerk is unreachable the IDs are returned, which is ugly but still usable.
+ */
+export async function nameTokenOrgs(
+  env: Env,
+  userId: string,
+  tokenOrgs: ReadonlyArray<{ id: string; role: OrgMembership["role"] }>,
+): Promise<OrgMembership[]> {
+  if (tokenOrgs.length === 0) return [];
+
+  let known = new Map<string, OrgMembership>();
+  try {
+    known = new Map(
+      (await listOrgMemberships(env, userId)).map((membership) => [membership.orgId, membership]),
+    );
+  } catch (error) {
+    console.warn("could not load organization names", error);
+  }
+
+  return tokenOrgs.map((org) => ({
+    orgId: org.id,
+    name: known.get(org.id)?.name ?? org.id,
+    slug: known.get(org.id)?.slug ?? null,
+    role: org.role,
+  }));
+}
+
 /** Fetch profile fields for `GET /me`. */
 export async function getUserProfile(
   env: Env,

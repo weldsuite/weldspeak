@@ -431,9 +431,10 @@ export class DictationSession extends DurableObject<Env> {
     ];
 
     // An admin who turned retention off means it: no server-side copy at all.
-    // The desktop client honours the same flag for its local history.
+    // A person can also opt out for themselves ("Keep my dictations" off);
+    // they can never opt back in over the org's choice.
     const settings = await loadOrgSettings(this.env.DB, identity.orgId);
-    if (settings?.retainTranscripts !== false) {
+    if (settings?.retainTranscripts !== false && this.#startFrame?.retain !== false) {
       statements.push(
         this.env.DB.prepare(
           `INSERT INTO transcripts

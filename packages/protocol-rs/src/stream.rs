@@ -30,6 +30,10 @@ pub enum ClientFrame {
         /// Run the cleanup pass. When false the raw transcript is returned.
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<bool>,
+        /// Store the transcript in history. Only `false` changes anything:
+        /// the server already defaults to keeping it unless the org says not.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retain: Option<bool>,
     },
     /// Sent on hotkey release. The server finalizes and replies `result`.
     #[serde(rename = "stop")]
@@ -128,6 +132,7 @@ mod tests {
             keyterms: Some(vec!["Inconel 625".into()]),
             app_name: None,
             format: Some(true),
+            retain: Some(false),
         };
 
         let json: serde_json::Value = serde_json::to_value(&frame).unwrap();
@@ -135,6 +140,7 @@ mod tests {
         assert_eq!(json["sampleRate"], 16_000);
         assert_eq!(json["orgId"], "org_123");
         assert_eq!(json["keyterms"][0], "Inconel 625");
+        assert_eq!(json["retain"], false);
         // Absent optionals are omitted rather than sent as null.
         assert!(json.get("appName").is_none());
     }

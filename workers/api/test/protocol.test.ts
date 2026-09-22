@@ -52,6 +52,20 @@ describe("client frame parsing", () => {
     expect(frame).toMatchObject({ format: true });
   });
 
+  it("keeps history unless the client opts out", () => {
+    // Older desktop builds never send `retain`; their history must not vanish.
+    const legacy = parseClientFrame({ type: "start", sampleRate: 16_000, encoding: "linear16" });
+    expect(legacy).toMatchObject({ retain: true });
+
+    const optOut = parseClientFrame({
+      type: "start",
+      sampleRate: 16_000,
+      encoding: "linear16",
+      retain: false,
+    });
+    expect(optOut).toMatchObject({ retain: false });
+  });
+
   it("drops non-string entries from keyterms", () => {
     // Frames arrive from the network, so the list is filtered rather than trusted.
     const frame = parseClientFrame({

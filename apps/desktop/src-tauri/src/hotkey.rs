@@ -191,12 +191,7 @@ pub fn held_accelerator() -> Option<String> {
 
 /// First currently held bindable key (legacy helper for tests / call sites).
 pub fn first_held_code() -> Option<String> {
-    held_accelerator().and_then(|accel| {
-        codes::parts(&accel)
-            .into_iter()
-            .next()
-            .map(str::to_string)
-    })
+    held_accelerator().and_then(|accel| codes::parts(&accel).into_iter().next().map(str::to_string))
 }
 
 /// Settled accelerator for Hub capture: waits until the held set is stable.
@@ -309,12 +304,22 @@ fn poll_loop() {
     let mut last_short_release: Option<Instant> = None;
     let mut escape_held = false;
     let mut hf_stop_armed = false;
+    // After Settings captures a key, the person is still holding it when the
+    // new binding goes live. Ignore the binding until it has been let go, or
+    // that same press would start a dictation the moment capture ends.
+    let mut await_release = false;
 
     loop {
         let cancel = CANCEL_HOLD.swap(false, Ordering::SeqCst);
         let suspended = SUSPENDED.load(Ordering::Relaxed);
         let packed = CURRENT.load(Ordering::Relaxed);
-        let key_down = !cancel && !suspended && binding_down(packed);
+        let physically_down = binding_down(packed);
+        if cancel || suspended {
+            await_release = true;
+        } else if await_release && !physically_down {
+            await_release = false;
+        }
+        let key_down = !await_release && physically_down;
         let escape = !suspended && platform::is_escape_down();
         let now = Instant::now();
 

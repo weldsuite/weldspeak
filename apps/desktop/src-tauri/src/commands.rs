@@ -220,11 +220,12 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
     let verify_url = grant.verify_url.clone();
     let user_code = grant.user_code.clone();
 
-    open_in_browser(&verify_url)?;
+    open_in_browser(&app, &verify_url)?;
 
     // Poll in the background so the settings window stays responsive while the
     // user signs in.
     tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
         match auth::await_approval(&api_base, &grant).await {
             Ok(tokens) => {
                 if let Err(error) = auth::save_refresh_token(&tokens.refresh_token) {
@@ -236,12 +237,14 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
                     store.accept(tokens);
                 }
 
-                use tauri::Emitter;
                 let _ = app.emit("weldspeak://signed-in", ());
                 crate::native_settings::on_signed_in();
             }
             Err(error) => {
                 tracing::warn!(%error, "sign-in did not complete");
+                // The Hub's code dialog shows this; the pill covers the case
+                // where the Hub was closed while waiting.
+                let _ = app.emit("weldspeak://sign-in-failed", error.to_string());
                 crate::overlay::show_notice(&app, &error.to_string());
             }
         }
@@ -253,34 +256,22 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
     })
 }
 
-/// Open `url` in the user's default browser without going through the webview.
-pub(crate) fn open_in_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|error| format!("could not open the browser: {error}"))?;
-        Ok(())
-    }
+/// Open a web page in the user's default browser without going through the
+/// webview's ACL.
+///
+/// Only http(s) is accepted, and the URL goes to the OS as a URL rather than
+/// through a shell: `cmd /C start` treated `&` in a query string as a command
+/// separator, so a link with parameters was cut short or ran the remainder.
+pub(crate) fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
 
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|error| format!("could not open the browser: {error}"))?;
-        Ok(())
+    let parsed = url::Url::parse(url).map_err(|_| format!("Not a web address: {url}"))?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("Only web links can be opened.".into());
     }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        let _ = url;
-        Err("opening a browser is not supported on this platform".into())
-    }
+    app.opener()
+        .open_url(parsed.as_str(), None::<&str>)
+        .map_err(|error| format!("could not open the browser: {error}"))
 }
 
 #[tauri::command]
@@ -452,15 +443,16 @@ pub async fn delete_transcript(app: AppHandle, id: String) -> Result<(), String>
 }
 
 /// Copy arbitrary text (Hub history rows) to the clipboard.
+///
+/// The Hub confirms with its own toast; popping the listening pill at the
+/// bottom of the screen as well was a second, distant confirmation.
 #[tauri::command]
-pub fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+pub fn copy_text(text: String) -> Result<(), String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("Nothing to copy.".into());
     }
-    inject::copy_to_clipboard(trimmed).map_err(|error| error.to_string())?;
-    crate::overlay::show_notice(&app, "Copied");
-    Ok(())
+    inject::copy_to_clipboard(trimmed).map_err(|error| error.to_string())
 }
 
 /// Settled one- or two-key chord — used by Hub “Hold keys…” capture.
@@ -471,6 +463,6 @@ pub fn poll_held_hotkey() -> Option<String> {
 
 /// Open a URL in the system browser (dashboard, docs).
 #[tauri::command]
-pub fn open_external_url(url: String) -> Result<(), String> {
-    open_in_browser(&url)
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    open_in_browser(&app, &url)
 }

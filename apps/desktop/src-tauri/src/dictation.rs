@@ -130,8 +130,8 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 let text = crate::snippets::expand(&text, &snippets);
                 let text = crate::learn::apply(&text, &corrections);
                 remember_transcript(app, &text);
+                crate::native_settings::on_history_changed(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
-                crate::native_settings::on_history_changed(app);
 
                 // The injector reports completion by driving the machine on;
                 // without this the session would never return to idle.
@@ -154,7 +154,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
 fn open_socket(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    let (api_base, org_id, locale, format) = {
+    let (api_base, org_id, locale, format, keep_history) = {
         let Ok(settings) = state.settings.lock() else {
             return;
         };
@@ -163,6 +163,7 @@ fn open_socket(app: &AppHandle) {
             settings.org_id.clone(),
             settings.locale.clone(),
             settings.clean_up_text,
+            settings.keep_history,
         )
     };
 
@@ -193,6 +194,8 @@ fn open_socket(app: &AppHandle) {
         keyterms: None,
         app_name: None,
         format: Some(format),
+        // "Keep my dictations" off: ask the server not to store this one.
+        retain: Some(keep_history),
     }));
 
     let for_events = app.clone();

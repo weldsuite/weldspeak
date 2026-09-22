@@ -37,6 +37,12 @@ impl UpdateInfo {
 }
 
 pub fn spawn(app: AppHandle) {
+    // A local debug build is always "older" than the rolling release, so it
+    // would install the release over the top and restart into that instead.
+    if cfg!(debug_assertions) {
+        tracing::info!("debug build: skipping the launch-time update install");
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         match run_install(&app).await {
             Ok(true) => {
