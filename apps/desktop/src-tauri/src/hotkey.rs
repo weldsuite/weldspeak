@@ -325,7 +325,7 @@ fn poll_loop() {
 
         if cancel && phase != Phase::Idle {
             if matches!(phase, Phase::Ptt | Phase::HandsFree) {
-                dispatch_end(true);
+                dispatch_cancel();
             }
             phase = Phase::Idle;
             pressed_at = None;
@@ -334,7 +334,7 @@ fn poll_loop() {
 
         if escape && !escape_held && phase != Phase::Idle {
             if matches!(phase, Phase::Ptt | Phase::HandsFree) {
-                dispatch_end(true);
+                dispatch_cancel();
             }
             phase = Phase::Idle;
             pressed_at = None;
@@ -365,14 +365,11 @@ fn poll_loop() {
                 if !key_down {
                     // A brief press can be the first half of a double-tap for
                     // hands-free; a real hold clears that candidate.
-                    if pressed_at.is_some_and(|t| now.duration_since(t) < SHORT_TAP) {
-                        last_short_release = Some(now);
-                    } else {
-                        last_short_release = None;
-                    }
+                    let short_tap = pressed_at.is_some_and(|t| now.duration_since(t) < SHORT_TAP);
+                    last_short_release = short_tap.then_some(now);
                     pressed_at = None;
                     phase = Phase::Idle;
-                    dispatch_end(false);
+                    dispatch_release(short_tap);
                 }
             }
             Phase::HandsFree => {
@@ -381,7 +378,7 @@ fn poll_loop() {
                 } else if hf_stop_armed {
                     hf_stop_armed = false;
                     phase = Phase::Idle;
-                    dispatch_end(false);
+                    dispatch_release(false);
                 }
             }
         }
@@ -394,14 +391,21 @@ fn dispatch_begin() {
     dispatch(crate::dictation::begin);
 }
 
-fn dispatch_end(cancel: bool) {
-    dispatch(move |app| {
-        if cancel {
-            crate::dictation::cancel(app);
-        } else {
-            crate::dictation::end(app);
-        }
-    });
+fn dispatch_cancel() {
+    dispatch(crate::dictation::cancel);
+}
+
+/// Key released. A normal release keeps recording for a short tail; a quick
+/// tap keeps the dictation open for the whole double-tap window, so the
+/// second tap continues it hands-free instead of arriving after it has
+/// already been sent off to finish.
+fn dispatch_release(short_tap: bool) {
+    let tail = if short_tap {
+        DOUBLE_TAP
+    } else {
+        crate::dictation::RELEASE_TAIL
+    };
+    dispatch(move |app| crate::dictation::end(app, tail));
 }
 
 fn dispatch(action: impl FnOnce(&AppHandle) + Send + 'static) {

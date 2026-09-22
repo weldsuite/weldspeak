@@ -5,7 +5,9 @@
 //! — a tap released before the socket opens, Escape landing mid-cleanup, a
 //! result arriving after a cancel — be tested without a microphone.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc::unbounded_channel;
 use weldspeak_core::{Action, Event as SessionEvent, Frame};
@@ -38,9 +40,39 @@ pub fn spawn_audio_pump(app: AppHandle, frames: Receiver<Frame>) {
         .expect("failed to start the audio pump");
 }
 
+/// Keep recording this long after the key comes up.
+///
+/// People let go as the last syllable is still leaving their mouth, and a few
+/// tens of milliseconds more sit in the device buffer and the resampler.
+/// Sending `stop` on the instant of release cut that tail off — the most
+/// common way a dictation lost its last word.
+pub const RELEASE_TAIL: Duration = Duration::from_millis(250);
+
+/// Bumped by every release, press and cancel so a stale deferred stop can tell
+/// it has been overtaken.
+static STOP_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// A release is waiting out its tail; the next press continues the dictation.
+static STOP_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// Hotkey pressed: open a session.
 pub fn begin(app: &AppHandle) {
+    // Pressed again while the previous release was still in its tail: this is
+    // the same dictation continuing (a double-tap into hands-free, or a pause
+    // mid-thought). Drop the pending stop and keep streaming.
     let state = app.state::<AppState>();
+    if STOP_PENDING.swap(false, Ordering::SeqCst) {
+        STOP_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let continuing = state
+            .session
+            .lock()
+            .map(|session| !session.is_idle())
+            .unwrap_or(false);
+        // If the session failed during the tail there is nothing to continue;
+        // fall through and start a fresh one.
+        if continuing {
+            return;
+        }
+    }
 
     let actions = {
         let Ok(mut session) = state.session.lock() else {
@@ -54,23 +86,44 @@ pub fn begin(app: &AppHandle) {
         session.handle(SessionEvent::HotkeyDown)
     };
 
-    crate::learn::invalidate();
-    // Show the pill before the socket is up. Without this, a held key looks
-    // like nothing happened — the Wispr Flow complaint.
-    crate::overlay::appear_listening(app);
-    crate::media::pause_if_enabled(app);
-    // Retain speech spoken while the socket opens. Idle pre-roll is only 300 ms;
-    // without this, a quick tap finishes before `ready` and the utterance ages out.
+    // Retain speech from this instant, before anything slow runs. Pausing media
+    // goes through the OS media session and can take long enough for the first
+    // words to age out of the idle pre-roll.
     if let Ok(capture) = state.capture.lock() {
         if let Some(capture) = capture.as_ref() {
             capture.hold();
         }
     }
+    crate::learn::invalidate();
+    // Show the pill before the socket is up. Without this, a held key looks
+    // like nothing happened — the Wispr Flow complaint.
+    crate::overlay::appear_listening(app);
+    crate::media::pause_if_enabled(app);
     perform(app, actions);
 }
 
-/// Hotkey released: finish and wait for the text.
-pub fn end(app: &AppHandle) {
+/// Hotkey released: keep listening for `tail`, then finish and wait for the
+/// text.
+pub fn end(app: &AppHandle, tail: Duration) {
+    let generation = STOP_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    STOP_PENDING.store(true, Ordering::SeqCst);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tail).await;
+        let for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if STOP_GENERATION.load(Ordering::SeqCst) != generation
+                || !STOP_PENDING.swap(false, Ordering::SeqCst)
+            {
+                return;
+            }
+            finish(&for_main);
+        });
+    });
+}
+
+fn finish(app: &AppHandle) {
     let actions = {
         let state = app.state::<AppState>();
         let Ok(mut session) = state.session.lock() else {
@@ -84,6 +137,8 @@ pub fn end(app: &AppHandle) {
 
 /// Escape: abandon the dictation.
 pub fn cancel(app: &AppHandle) {
+    STOP_PENDING.store(false, Ordering::SeqCst);
+    STOP_GENERATION.fetch_add(1, Ordering::SeqCst);
     let actions = {
         let state = app.state::<AppState>();
         let Ok(mut session) = state.session.lock() else {

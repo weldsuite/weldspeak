@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream, StreamConfig};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use weldspeak_core::{Frame, Framer, Resampler};
@@ -78,7 +78,7 @@ fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
 /// thread, which drops the stream.
 pub struct Capture {
     shared: Arc<Mutex<Pipeline>>,
-    level: Arc<AtomicU32>,
+    level: Arc<AtomicU64>,
     shutdown: Option<Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -97,6 +97,54 @@ impl Drop for Capture {
 struct Pipeline {
     resampler: Resampler,
     framer: Framer,
+    meter: Meter,
+}
+
+/// Length of one loudness reading. Matches Wispr Flow's 40 ms audio chunks,
+/// which is what its waveform is tuned against.
+const METER_CHUNK_MS: usize = 40;
+
+/// Accumulates device samples into one dBFS reading per [`METER_CHUNK_MS`].
+struct Meter {
+    sum_squares: f64,
+    count: usize,
+    chunk: usize,
+    seq: u32,
+}
+
+impl Meter {
+    fn new(sample_rate: u32, channels: usize) -> Self {
+        Self {
+            sum_squares: 0.0,
+            count: 0,
+            chunk: (sample_rate as usize * channels * METER_CHUNK_MS / 1000).max(1),
+            seq: 0,
+        }
+    }
+
+    /// Feed samples; publishes a reading each time a chunk completes.
+    fn push(&mut self, samples: &[f32], level: &AtomicU64) {
+        for &sample in samples {
+            self.sum_squares += f64::from(sample) * f64::from(sample);
+            self.count += 1;
+            if self.count == self.chunk {
+                let rms = (self.sum_squares / self.count as f64).sqrt();
+                let db = (20.0 * (rms + 1e-10).log10()) as f32;
+                self.seq = self.seq.wrapping_add(1);
+                level.store(pack_level(self.seq, db), Ordering::Relaxed);
+                self.sum_squares = 0.0;
+                self.count = 0;
+            }
+        }
+    }
+}
+
+fn pack_level(seq: u32, db: f32) -> u64 {
+    (u64::from(seq) << 32) | u64::from(db.to_bits())
+}
+
+fn unpack_level(bits: u64) -> (u32, f32) {
+    ((bits >> 32) as u32, f32::from_bits(bits as u32))
 }
 
 impl Capture {
@@ -110,8 +158,9 @@ impl Capture {
         let (shutdown, shutdown_rx) = channel::<()>();
         // The audio thread reports whether the device opened, so a missing or
         // refused microphone surfaces here rather than as silence later.
-        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, Arc<AtomicU32>)>>();
-        let level = Arc::new(AtomicU32::new(0));
+        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, Arc<AtomicU64>)>>();
+        // Seq 0 at -120 dBFS reads as "no audio yet" rather than full scale.
+        let level = Arc::new(AtomicU64::new(pack_level(0, -120.0)));
         let level_for_thread = Arc::clone(&level);
 
         let thread = std::thread::Builder::new()
@@ -148,17 +197,19 @@ impl Capture {
         }
     }
 
-    /// Instantaneous microphone loudness, 0.0–1.0, for the listening waveform.
-    pub fn current_level(&self) -> f32 {
-        f32::from_bits(self.level.load(Ordering::Relaxed))
+    /// Loudness of the most recent 40 ms of input in dBFS, with a sequence
+    /// number that changes once per chunk so the waveform can tell a new
+    /// reading from the same one sampled twice.
+    pub fn latest_chunk_db(&self) -> (u32, f32) {
+        unpack_level(self.level.load(Ordering::Relaxed))
     }
 
     /// Open the chosen input device. Runs on the audio thread.
     fn open(
         frames: Sender<Frame>,
-        level: Arc<AtomicU32>,
+        level: Arc<AtomicU64>,
         preferred: Option<&str>,
-    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU32>)> {
+    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU64>)> {
         let device = pick_input_device(preferred)?;
 
         let mut supported = device.default_input_config()?;
@@ -195,6 +246,7 @@ impl Capture {
         let shared = Arc::new(Mutex::new(Pipeline {
             resampler: Resampler::new(config.sample_rate.0, config.channels as usize, SAMPLE_RATE),
             framer: Framer::new(),
+            meter: Meter::new(config.sample_rate.0, config.channels as usize),
         }));
 
         let stream = Self::build_stream(
@@ -237,7 +289,7 @@ impl Capture {
         config: &StreamConfig,
         format: SampleFormat,
         shared: Arc<Mutex<Pipeline>>,
-        level: Arc<AtomicU32>,
+        level: Arc<AtomicU64>,
         frames: Sender<Frame>,
     ) -> Result<Stream> {
         // An error on the audio thread must not take the process down: the user
@@ -283,44 +335,29 @@ impl Capture {
     }
 }
 
-/// Runs on the audio callback thread: resample, frame, hand off.
+/// Runs on the audio callback thread: meter, resample, frame, hand off.
 ///
-/// This thread has a hard deadline — overrunning it produces an audible glitch
-/// — so it does no I/O and never blocks. The channel send is non-blocking and a
-/// full channel drops the frame rather than stalling capture.
+/// Audio is passed through untouched. Per-buffer make-up gain used to sit here;
+/// it re-chose a gain for every ~10 ms buffer from that buffer's own peak, so
+/// the level jumped between 1× and 4× at buffer edges and quiet syllables and
+/// room noise were lifted to the same level as speech. Wispr Flow asks for the
+/// raw microphone (no AGC, noise suppression or echo cancellation) and leaves
+/// loudness to the recognizer, which is trained on exactly that.
 fn process(
     shared: &Arc<Mutex<Pipeline>>,
-    level: &Arc<AtomicU32>,
+    level: &Arc<AtomicU64>,
     frames: &Sender<Frame>,
     samples: &[f32],
 ) {
-    // Peak with instant attack and a short release so the overlay can track
-    // speech. Raw RMS of conversational mic input is ~0.02 and would look like
-    // silence if drawn linearly.
-    let peak = samples
-        .iter()
-        .fold(0.0f32, |max, sample| max.max(sample.abs()));
-    let rms = rms_f32(samples);
-    let instant = peak.max(rms * 1.8);
-    let previous = f32::from_bits(level.load(Ordering::Relaxed));
-    let next = if instant > previous {
-        instant
-    } else {
-        previous * 0.86 + instant * 0.14
-    };
-    level.store(next.to_bits(), Ordering::Relaxed);
-
-    let Ok(mut pipeline) = shared.try_lock() else {
-        // The lock is only held briefly by arm/disarm. Skipping a callback is
-        // better than blocking the audio thread waiting for it.
+    // Blocking is deliberate. The only other holders are hold/arm/disarm,
+    // which take microseconds; `try_lock` here used to discard the whole
+    // callback's audio when it lost that race, leaving a hole mid-sentence.
+    let Ok(mut pipeline) = shared.lock() else {
         return;
     };
 
-    // Quiet laptop mics often sit well below the level Nova-3 was trained on.
-    // Soft make-up gain lifts speech toward a healthy peak without touching
-    // already-loud input (and without inventing a noise gate).
-    let boosted = apply_makeup_gain(samples, peak);
-    let resampled = pipeline.resampler.push(&boosted);
+    pipeline.meter.push(samples, level);
+    let resampled = pipeline.resampler.push(samples);
     for frame in pipeline.framer.push(&resampled) {
         if frames.send(frame).is_err() {
             // The receiver is gone; the session has ended.
@@ -329,72 +366,35 @@ fn process(
     }
 }
 
-/// Root-mean-square loudness of a buffer, clamped to 0..=1.
-fn rms_f32(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    let sum: f32 = samples.iter().map(|sample| sample * sample).sum();
-    (sum / samples.len() as f32).sqrt().min(1.0)
-}
-
-/// Soft make-up gain for quiet microphones.
-///
-/// Target peak ~0.35 when the buffer is clearly speech-like but quiet. Silence
-/// and already-loud buffers are left alone so noise floor and clipping stay put.
-fn apply_makeup_gain(samples: &[f32], peak: f32) -> Vec<f32> {
-    const FLOOR: f32 = 0.012;
-    const TARGET: f32 = 0.35;
-    const MAX_GAIN: f32 = 4.0;
-
-    if peak < FLOOR || peak >= TARGET {
-        return samples.to_vec();
-    }
-    let gain = (TARGET / peak).min(MAX_GAIN);
-    samples
-        .iter()
-        .map(|sample| (sample * gain).clamp(-1.0, 1.0))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{apply_makeup_gain, rms_f32};
+    use super::{pack_level, unpack_level, Meter};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
-    fn silence_is_zero() {
-        assert_eq!(rms_f32(&[0.0, 0.0, 0.0, 0.0]), 0.0);
+    fn level_packing_round_trips() {
+        assert_eq!(unpack_level(pack_level(7, -32.5)), (7, -32.5));
     }
 
     #[test]
-    fn a_full_scale_tone_is_loud() {
-        assert!(rms_f32(&[1.0, -1.0, 1.0, -1.0]) > 0.9);
+    fn meter_reports_one_reading_per_40_ms() {
+        // 1 kHz mono → 40 samples per reading.
+        let level = AtomicU64::new(pack_level(0, -120.0));
+        let mut meter = Meter::new(1_000, 1);
+        meter.push(&[0.5; 39], &level);
+        assert_eq!(unpack_level(level.load(Ordering::Relaxed)).0, 0);
+        meter.push(&[0.5; 1], &level);
+        let (seq, db) = unpack_level(level.load(Ordering::Relaxed));
+        assert_eq!(seq, 1);
+        // RMS 0.5 ≈ −6 dBFS.
+        assert!((db + 6.02).abs() < 0.05, "got {db}");
     }
 
     #[test]
-    fn quiet_speech_is_boosted() {
-        let quiet: Vec<f32> = (0..64).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }).collect();
-        let peak = 0.05;
-        let boosted = apply_makeup_gain(&quiet, peak);
-        let out_peak = boosted.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        // Cap is 4×, so 0.05 → 0.20; still clearly louder than the input.
-        assert!(
-            out_peak >= 0.19,
-            "expected make-up gain, got peak {out_peak}"
-        );
-    }
-
-    #[test]
-    fn loud_speech_is_unchanged() {
-        let loud = vec![0.5f32, -0.5, 0.4, -0.4];
-        let boosted = apply_makeup_gain(&loud, 0.5);
-        assert_eq!(boosted, loud);
-    }
-
-    #[test]
-    fn near_silence_is_not_amplified() {
-        let hush = vec![0.001f32, -0.001, 0.002, -0.002];
-        let boosted = apply_makeup_gain(&hush, 0.002);
-        assert_eq!(boosted, hush);
+    fn silence_reads_as_very_quiet() {
+        let level = AtomicU64::new(0);
+        let mut meter = Meter::new(1_000, 1);
+        meter.push(&[0.0; 40], &level);
+        assert!(unpack_level(level.load(Ordering::Relaxed)).1 < -150.0);
     }
 }
