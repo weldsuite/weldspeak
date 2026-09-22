@@ -23,14 +23,49 @@ import {
   type StartFrame,
 } from "@weldspeak/protocol";
 import type { Env } from "./env.js";
+import {
+  countWords,
+  FREE_MONTHLY_WORD_CAP,
+  isWordQuotaExceeded,
+  type Entitlement,
+} from "./billing/entitlements.js";
 import { cleanupTranscript } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
-import { loadOrgSettings, orgUsageSeconds } from "./routes/org.js";
+import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
+import type { DictionaryTerm } from "@weldspeak/protocol";
+
+/** Deepgram keyterm budget — keep the list short and unique. */
+const MAX_KEYTERMS = 100;
+
+/**
+ * Build the Deepgram `keyterm` list from the glossary.
+ *
+ * Written forms and optional `soundsLike` spellings both boost recognition;
+ * duplicates are dropped. Cap keeps the Workers AI payload bounded.
+ */
+export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const term of terms) {
+    for (const candidate of [term.term, term.soundsLike]) {
+      const value = candidate?.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+      if (out.length >= MAX_KEYTERMS) return out;
+    }
+  }
+  return out;
+}
 
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
 export interface SessionIdentity {
   userId: string;
   orgId: string | null;
+  /** Snapshot from the access token at connection time. */
+  entitlement: Entitlement;
 }
 
 /**
@@ -145,8 +180,17 @@ export class DictationSession extends DurableObject<Env> {
 
     const identity = this.#identity!;
 
-    // Quota is checked before any audio is accepted, so an org past its cap is
-    // told immediately rather than after paying for a transcription.
+    // Free-tier word cap is per person (UTC calendar month), across orgs.
+    const wordsUsed = await userWordCount(this.env.DB, identity.userId);
+    if (isWordQuotaExceeded(identity.entitlement, wordsUsed)) {
+      this.#fail(
+        "quota_exceeded",
+        `Free plan is ${FREE_MONTHLY_WORD_CAP.toLocaleString("en-US")} words per month. Subscribe at https://weldspeak.com/pricing`,
+      );
+      return;
+    }
+
+    // Optional org minute cap is an admin policy on top (paid orgs).
     const settings = await loadOrgSettings(this.env.DB, identity.orgId);
     if (settings?.monthlyMinuteCap != null) {
       const used = await orgUsageSeconds(this.env.DB, identity.orgId);
@@ -162,9 +206,11 @@ export class DictationSession extends DurableObject<Env> {
 
     // The org glossary is merged server-side rather than trusting the client's
     // keyterm list: it keeps the vocabulary authoritative and stops a client
-    // from probing another org's glossary by guessing terms.
+    // from probing another org's glossary by guessing terms. Include
+    // `soundsLike` hints as extra keyterms so pronunciation spellings also
+    // boost the written form Deepgram should emit.
     const terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
-    const keyterms = terms.map((term) => term.term);
+    const keyterms = glossaryKeyterms(terms);
 
     try {
       await this.#connectUpstream(frame, keyterms);
@@ -181,25 +227,55 @@ export class DictationSession extends DurableObject<Env> {
    *
    * Workers AI returns a WebSocket for streaming models when called with
    * `{ websocket: true }`; recognition options travel in the same call.
+   *
+   * Every option value is sent as a string. Workers AI validates this payload
+   * as all-strings and rejects a number or boolean with a 400 ("expected a
+   * string"), so `sample_rate: 16000` fails where `"16000"` succeeds. Only
+   * `keyterm` stays structured, as an array of strings.
+   *
+   * Options below are fields declared on Cloudflare's
+   * `@cf/deepgram/nova-3` input type — nothing invented. Hold-to-talk closes
+   * the stream itself, so `endpointing` is disabled to avoid mid-pause
+   * finals that discard acoustic context for the next phrase.
    */
   async #connectUpstream(frame: StartFrame, keyterms: string[]): Promise<void> {
     const response = (await this.env.AI.run(
       this.env.STT_MODEL as never,
       {
         encoding: "linear16",
-        sample_rate: SAMPLE_RATE,
-        channels: 1,
-        interim_results: true,
-        punctuate: true,
-        smart_format: true,
+        sample_rate: String(SAMPLE_RATE),
+        channels: "1",
+        interim_results: "true",
+        punctuate: "true",
+        smart_format: "true",
+        // Spoken "period" / "comma" → punctuation (Deepgram dictation mode).
+        dictation: "true",
+        // Numerals: "twenty five" → "25" — useful for weld specs and sizes.
+        numerals: "true",
+        // Keep fillers out of the raw transcript; cleanup still strips hedges.
+        filler_words: "false",
+        // Client issues CloseStream on hotkey-up; do not auto-finalize on pause.
+        endpointing: "false",
         ...(frame.locale ? { language: frame.locale } : {}),
         ...(keyterms.length > 0 ? { keyterm: keyterms } : {}),
       } as never,
       { websocket: true } as never,
-    )) as unknown as { webSocket?: WebSocket };
+    )) as unknown as Response & { webSocket?: WebSocket };
 
     const upstream = response?.webSocket;
-    if (!upstream) throw new Error("no WebSocket returned by Workers AI");
+    // A refused handshake comes back as an ordinary error response whose body
+    // names the offending option. That body is the only thing worth having
+    // when the model's schema drifts, so it travels with the error rather than
+    // being swallowed into a bare "no WebSocket".
+    if (!upstream) {
+      let detail = "";
+      try {
+        detail = ` ${(await response.text()).slice(0, 300)}`;
+      } catch {
+        /* no readable body */
+      }
+      throw new Error(`Workers AI returned no WebSocket (status ${response?.status})${detail}`);
+    }
 
     upstream.accept();
     this.#upstream = upstream;
@@ -318,12 +394,12 @@ export class DictationSession extends DurableObject<Env> {
   }
 
   /**
-   * Wait briefly for the recognizer's last final after `CloseStream`.
+   * Wait for the recognizer's last final after `CloseStream`.
    *
-   * Resolves as soon as a final arrives, rather than always burning the full
-   * timeout — this sits directly on the hotkey-release-to-text path.
+   * Resolves as soon as a final arrives. The timeout is only a backstop for a
+   * recognizer that never flushes, so the tail of the last word is not cut.
    */
-  async #awaitFinalTranscript(timeoutMs = 400): Promise<void> {
+  async #awaitFinalTranscript(timeoutMs = 1_200): Promise<void> {
     const before = this.#finals.length;
     const deadline = Date.now() + timeoutMs;
 
@@ -341,20 +417,24 @@ export class DictationSession extends DurableObject<Env> {
   ): Promise<void> {
     const day = new Date().toISOString().slice(0, 10);
     const audioSeconds = Math.round(durationMs / 1000);
+    const wordCount = countWords(formatted);
 
     const statements = [
       this.env.DB.prepare(
-        `INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO usage (clerk_org_id, clerk_user_id, day, audio_seconds, word_count)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT (clerk_org_id, clerk_user_id, day)
-         DO UPDATE SET audio_seconds = audio_seconds + excluded.audio_seconds`,
-      ).bind(identity.orgId ?? "", identity.userId, day, audioSeconds),
+         DO UPDATE SET
+           audio_seconds = audio_seconds + excluded.audio_seconds,
+           word_count = word_count + excluded.word_count`,
+      ).bind(identity.orgId ?? "", identity.userId, day, audioSeconds, wordCount),
     ];
 
     // An admin who turned retention off means it: no server-side copy at all.
-    // The desktop client honours the same flag for its local history.
+    // A person can also opt out for themselves ("Keep my dictations" off);
+    // they can never opt back in over the org's choice.
     const settings = await loadOrgSettings(this.env.DB, identity.orgId);
-    if (settings?.retainTranscripts !== false) {
+    if (settings?.retainTranscripts !== false && this.#startFrame?.retain !== false) {
       statements.push(
         this.env.DB.prepare(
           `INSERT INTO transcripts

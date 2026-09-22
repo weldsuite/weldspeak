@@ -12,6 +12,8 @@ import type { DictionaryTerm } from "@weldspeak/protocol";
 import {
   buildCleanupPrompt,
   cleanupTranscript,
+  looksLikeAssistantReply,
+  preservesDictation,
   stripModelChatter,
   CLEANUP_TIMEOUT_MS,
 } from "../src/format.js";
@@ -20,7 +22,7 @@ import type { Env } from "../src/env.js";
 /** An Env carrying only what cleanup touches, with a scripted model. */
 function envWith(run: (model: string, input: unknown) => Promise<unknown>): Env {
   return {
-    CLEANUP_MODEL: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    CLEANUP_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
     AI: { run: (model: string, input: unknown) => run(model, input) },
   } as unknown as Env;
 }
@@ -36,8 +38,12 @@ const term = (name: string, soundsLike: string | null = null): DictionaryTerm =>
 });
 
 describe("prompt construction", () => {
-  it("sends the transcript alone when there is no glossary", () => {
-    expect(buildCleanupPrompt("hello there", [])).toBe("hello there");
+  it("wraps the transcript as data so a question is not treated as a chat turn", () => {
+    const prompt = buildCleanupPrompt("what time is the meeting", []);
+
+    expect(prompt).toContain("<dictation>");
+    expect(prompt).toContain("what time is the meeting");
+    expect(prompt).toMatch(/never an answer/i);
   });
 
   it("supplies glossary terms as spelling context", () => {
@@ -45,6 +51,7 @@ describe("prompt construction", () => {
 
     expect(prompt).toContain("Inconel 625");
     expect(prompt).toContain("we used inconel");
+    expect(prompt).toContain("<dictation>");
   });
 
   it("includes phonetic hints when a term has one", () => {
@@ -77,11 +84,48 @@ describe("stripping model chatter", () => {
   it("leaves clean text untouched", () => {
     expect(stripModelChatter("The weld looks good.")).toBe("The weld looks good.");
   });
+
+  it("drops a thinking trace if the model ignored enable_thinking: false", () => {
+    expect(stripModelChatter("<think>fix punctuation</think>\nThe weld looks good.")).toBe(
+      "The weld looks good.",
+    );
+  });
+});
+
+describe("reply detection", () => {
+  it("flags a model that refuses to transcribe", () => {
+    expect(
+      looksLikeAssistantReply(
+        "I'm not going to transcribe anything yet. Please go ahead and dictate the text you'd like me to clean up.",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a dictated first-person sentence", () => {
+    expect(looksLikeAssistantReply("I'm heading to site at three.")).toBe(false);
+  });
+
+  it("rejects an answer that does not keep the dictated words", () => {
+    expect(preservesDictation("what is two plus two", "4")).toBe(false);
+  });
+
+  it("accepts a cleanup that keeps the utterance", () => {
+    expect(preservesDictation("um the weld looks uh good", "The weld looks good.")).toBe(true);
+  });
 });
 
 describe("cleanup", () => {
   it("returns the cleaned text when the model behaves", async () => {
     const env = respondWith("The weld looks good.");
+    const result = await cleanupTranscript(env, "um the weld looks uh good", []);
+
+    expect(result).toEqual({ text: "The weld looks good.", formatted: true });
+  });
+
+  it("reads the chat-completions response shape GLM returns", async () => {
+    const env = envWith(async () => ({
+      choices: [{ message: { content: "The weld looks good." } }],
+    }));
     const result = await cleanupTranscript(env, "um the weld looks uh good", []);
 
     expect(result).toEqual({ text: "The weld looks good.", formatted: true });
@@ -94,15 +138,20 @@ describe("cleanup", () => {
     const env = envWith(async (model, input) => {
       seenModel = model;
       seenInput = input as Record<string, unknown>;
-      return { response: "ok" };
+      return { response: "Hello." };
     });
 
     await cleanupTranscript(env, "hello", []);
 
-    expect(seenModel).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    // Cleanup is a rewrite, not a creative task; near-greedy decoding stops the
-    // model paraphrasing what it was told to preserve.
+    expect(seenModel).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
+    // Cleanup is near-greedy polish; stay ≤0.2 so the model does not wander.
     expect(seenInput.temperature).toBeLessThanOrEqual(0.2);
+    expect(
+      (seenInput.chat_template_kwargs as { enable_thinking?: boolean } | undefined)
+        ?.enable_thinking,
+    ).toBe(false);
+    const messages = seenInput.messages as Array<{ content: string }>;
+    expect(messages[1]?.content).toContain("<dictation>");
   });
 
   it("ships the raw transcript when the model exceeds its deadline", async () => {
@@ -146,6 +195,28 @@ describe("cleanup", () => {
     expect(result).toEqual({ text: "what do you think", formatted: false });
   });
 
+  it("ships the raw transcript when the model answers a dictated question", async () => {
+    const result = await cleanupTranscript(
+      respondWith("The meeting is at three o'clock."),
+      "what time is the meeting",
+      [],
+    );
+
+    expect(result).toEqual({ text: "what time is the meeting", formatted: false });
+  });
+
+  it("ships the raw transcript when the model asks for dictation instead of copying it", async () => {
+    const result = await cleanupTranscript(
+      respondWith(
+        "I'm not going to transcribe anything yet. Please go ahead and dictate the text you'd like me to clean up.",
+      ),
+      "hello there",
+      [],
+    );
+
+    expect(result).toEqual({ text: "hello there", formatted: false });
+  });
+
   it("handles empty input without calling the model", async () => {
     let called = false;
     const env = envWith(async () => {
@@ -157,8 +228,8 @@ describe("cleanup", () => {
     expect(called).toBe(false);
   });
 
-  it("defaults to a deadline short enough to stay off the critical path", () => {
-    // Budgeted against the 500 ms p50 target for hotkey-release to visible text.
-    expect(CLEANUP_TIMEOUT_MS).toBeLessThanOrEqual(1_000);
+  it("defaults to a deadline the cleanup model can actually meet", () => {
+    expect(CLEANUP_TIMEOUT_MS).toBeGreaterThanOrEqual(2_000);
+    expect(CLEANUP_TIMEOUT_MS).toBeLessThanOrEqual(4_000);
   });
 });

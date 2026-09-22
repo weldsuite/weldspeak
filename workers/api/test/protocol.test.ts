@@ -24,7 +24,7 @@ describe("audio constants", () => {
     expect(SAMPLE_RATE).toBe(16_000);
     expect(FRAME_SAMPLES).toBe(320);
     expect(FRAME_BYTES).toBe(640);
-    expect(PREROLL_FRAMES).toBe(15);
+    expect(PREROLL_FRAMES).toBe(25);
   });
 
   it("converts bytes to duration", () => {
@@ -50,6 +50,20 @@ describe("client frame parsing", () => {
   it("defaults formatting on when the client does not say", () => {
     const frame = parseClientFrame({ type: "start", sampleRate: 16_000, encoding: "linear16" });
     expect(frame).toMatchObject({ format: true });
+  });
+
+  it("keeps history unless the client opts out", () => {
+    // Older desktop builds never send `retain`; their history must not vanish.
+    const legacy = parseClientFrame({ type: "start", sampleRate: 16_000, encoding: "linear16" });
+    expect(legacy).toMatchObject({ retain: true });
+
+    const optOut = parseClientFrame({
+      type: "start",
+      sampleRate: 16_000,
+      encoding: "linear16",
+      retain: false,
+    });
+    expect(optOut).toMatchObject({ retain: false });
   });
 
   it("drops non-string entries from keyterms", () => {

@@ -1,13 +1,14 @@
 //! Commands the settings window calls.
 
-use serde::Serialize;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use weldspeak_core::auth::now_secs;
 
 use crate::settings::Settings;
-use crate::{auth, hotkey, inject, AppState};
+use crate::{api, auth, hotkey, inject, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub signed_in: bool,
@@ -19,12 +20,68 @@ pub struct Status {
     pub can_inject: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgSummary {
     pub org_id: String,
     pub name: String,
     pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictionaryTerm {
+    pub id: String,
+    pub scope: String,
+    pub term: String,
+    pub sounds_like: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeResponse {
+    email: Option<String>,
+    orgs: Vec<OrgSummary>,
+}
+
+#[derive(Deserialize)]
+struct TermsResponse {
+    terms: Vec<DictionaryTerm>,
+}
+
+struct SessionContext {
+    api_base: String,
+    token: String,
+    org_id: Option<String>,
+}
+
+fn session_context(app: &AppHandle) -> Result<SessionContext, String> {
+    let state = app.state::<AppState>();
+    let api_base = state
+        .settings
+        .lock()
+        .map_err(|_| "settings unavailable")?
+        .api_base
+        .clone();
+    let org_id = state
+        .settings
+        .lock()
+        .map_err(|_| "settings unavailable")?
+        .org_id
+        .clone();
+    let token = state
+        .auth
+        .lock()
+        .map_err(|_| "session unavailable")?
+        .access_token(now_secs())
+        .map(str::to_owned)
+        .ok_or_else(|| "Sign in to manage your dictionary.".to_string())?;
+    Ok(SessionContext {
+        api_base,
+        token,
+        org_id,
+    })
 }
 
 #[tauri::command]
@@ -43,20 +100,42 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 /// reset fields it has never heard of.
 #[tauri::command]
 pub fn update_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     patch: serde_json::Value,
 ) -> Result<Settings, String> {
-    let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
+    let path = crate::settings::path_for(&app)?;
+    let hotkey_touched = patch.get("hotkey").is_some();
+    let microphone_touched = patch.get("microphone").is_some();
+    let next = {
+        let mut settings = state.settings.lock().map_err(|_| "settings unavailable")?;
 
-    let mut merged = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
-    if let (Some(target), Some(source)) = (merged.as_object_mut(), patch.as_object()) {
-        for (key, value) in source {
-            target.insert(key.clone(), value.clone());
+        let mut merged = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
+        if let (Some(target), Some(source)) = (merged.as_object_mut(), patch.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
         }
+
+        *settings = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+        settings.save(&path).map_err(|error| error.to_string())?;
+        settings.clone()
+    };
+
+    if hotkey_touched {
+        crate::reregister_hotkey(&app);
+    }
+    if microphone_touched {
+        crate::reopen_microphone(&app);
     }
 
-    *settings = serde_json::from_value(merged).map_err(|e| e.to_string())?;
-    Ok(settings.clone())
+    Ok(next)
+}
+
+/// Input devices currently attached, for the settings picker.
+#[tauri::command]
+pub fn list_microphones() -> Vec<crate::audio::Microphone> {
+    crate::audio::list_input_devices()
 }
 
 /// Check a hotkey, returning a human-readable reason if it will not work.
@@ -74,27 +153,60 @@ pub fn open_permission_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_status(state: State<'_, AppState>) -> Status {
-    let signed_in = state
-        .auth
-        .lock()
-        .map(|auth| auth.access_token(now_secs()).is_some())
-        .unwrap_or(false);
+pub async fn get_status(app: AppHandle) -> Status {
+    let can_inject = inject::can_synthesise_input();
+    let Ok(ctx) = session_context(&app) else {
+        return Status {
+            signed_in: false,
+            email: None,
+            orgs: Vec::new(),
+            can_inject,
+        };
+    };
 
-    Status {
-        signed_in,
-        email: None,
-        orgs: Vec::new(),
-        can_inject: inject::can_synthesise_input(),
+    match api::json::<MeResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/me",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(me) => Status {
+            signed_in: true,
+            email: me.email,
+            orgs: me.orgs,
+            can_inject,
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not load account");
+            Status {
+                signed_in: true,
+                email: None,
+                orgs: Vec::new(),
+                can_inject,
+            }
+        }
     }
 }
 
-/// Begin the device authorization grant and return the URL to open.
+/// Begin the device authorization grant, open the system browser, and return
+/// the short code the user must confirm.
 ///
-/// The caller opens it in the *system* browser, not the app's webview: Clerk
-/// needs real cookies on a real origin, which `tauri://localhost` cannot give it.
+/// The browser is opened here rather than from the webview: the opener plugin's
+/// URL ACL is easy to get wrong, and a failed `openUrl` from JS looks like the
+/// Sign in button does nothing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignInStarted {
+    pub verify_url: String,
+    pub user_code: String,
+}
+
 #[tauri::command]
-pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
+pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
     let api_base = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock().map_err(|_| "settings unavailable")?;
@@ -106,10 +218,14 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
 
     let verify_url = grant.verify_url.clone();
+    let user_code = grant.user_code.clone();
+
+    open_in_browser(&app, &verify_url)?;
 
     // Poll in the background so the settings window stays responsive while the
     // user signs in.
     tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
         match auth::await_approval(&api_base, &grant).await {
             Ok(tokens) => {
                 if let Err(error) = auth::save_refresh_token(&tokens.refresh_token) {
@@ -121,18 +237,41 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<String, String> {
                     store.accept(tokens);
                 }
 
-                use tauri::Emitter;
                 let _ = app.emit("weldspeak://signed-in", ());
+                crate::native_settings::on_signed_in();
             }
             Err(error) => {
                 tracing::warn!(%error, "sign-in did not complete");
-                use tauri::Emitter;
-                let _ = app.emit("weldspeak://notice", error.to_string());
+                // The Hub's code dialog shows this; the pill covers the case
+                // where the Hub was closed while waiting.
+                let _ = app.emit("weldspeak://sign-in-failed", error.to_string());
+                crate::overlay::show_notice(&app, &error.to_string());
             }
         }
     });
 
-    Ok(verify_url)
+    Ok(SignInStarted {
+        verify_url,
+        user_code,
+    })
+}
+
+/// Open a web page in the user's default browser without going through the
+/// webview's ACL.
+///
+/// Only http(s) is accepted, and the URL goes to the OS as a URL rather than
+/// through a shell: `cmd /C start` treated `&` in a query string as a command
+/// separator, so a link with parameters was cut short or ran the remainder.
+pub(crate) fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let parsed = url::Url::parse(url).map_err(|_| format!("Not a web address: {url}"))?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("Only web links can be opened.".into());
+    }
+    app.opener()
+        .open_url(parsed.as_str(), None::<&str>)
+        .map_err(|error| format!("could not open the browser: {error}"))
 }
 
 #[tauri::command]
@@ -141,4 +280,189 @@ pub fn sign_out(state: State<'_, AppState>) -> Result<(), String> {
         auth.clear();
     }
     auth::clear_refresh_token().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn list_dictionary(app: AppHandle) -> Result<Vec<DictionaryTerm>, String> {
+    let ctx = session_context(&app)?;
+    let response = api::json::<TermsResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/dictionary",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(response.terms)
+}
+
+#[tauri::command]
+pub async fn add_dictionary_term(
+    app: AppHandle,
+    term: String,
+    sounds_like: Option<String>,
+) -> Result<DictionaryTerm, String> {
+    let trimmed = term.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Type a word or phrase to add.".into());
+    }
+    let ctx = session_context(&app)?;
+    api::json::<DictionaryTerm, _>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::POST,
+        "/api/dictionary",
+        ctx.org_id.as_deref(),
+        Some(&serde_json::json!({
+            "term": trimmed,
+            "scope": "user",
+            "soundsLike": sounds_like.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        })),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_dictionary_term(app: AppHandle, id: String) -> Result<(), String> {
+    let ctx = session_context(&app)?;
+    api::send::<()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::DELETE,
+        &format!("/api/dictionary/{id}"),
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn suspend_hotkey(paused: bool) {
+    hotkey::suspend(paused);
+}
+
+#[tauri::command]
+pub fn hotkey_warning(accelerator: String) -> Option<String> {
+    hotkey::hold_warning(&accelerator)
+}
+
+#[tauri::command]
+pub fn hotkey_label(accelerator: String) -> String {
+    hotkey::label(&accelerator)
+}
+
+#[tauri::command]
+pub fn paste_last_transcript(app: AppHandle) -> Result<String, String> {
+    let text = {
+        let state = app.state::<AppState>();
+        let guard = state
+            .last_transcript
+            .lock()
+            .map_err(|_| "session unavailable")?;
+        guard.clone()
+    };
+    let Some(text) = text.filter(|value| !value.is_empty()) else {
+        crate::overlay::show_notice(&app, "Nothing to paste yet.");
+        return Err("Nothing to paste yet.".into());
+    };
+    let preference = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|settings| settings.injection.into())
+        .unwrap_or_default();
+    crate::inject_on_main_thread(&app, text.clone(), preference);
+    Ok(text)
+}
+
+#[tauri::command]
+pub fn copy_last_transcript(app: AppHandle) -> Result<(), String> {
+    let text = {
+        let state = app.state::<AppState>();
+        let guard = state
+            .last_transcript
+            .lock()
+            .map_err(|_| "session unavailable")?;
+        guard.clone()
+    };
+    let Some(text) = text.filter(|value| !value.is_empty()) else {
+        return Err("Nothing to copy yet.".into());
+    };
+    crate::inject::copy_to_clipboard(&text).map_err(|error| error.to_string())
+}
+
+#[derive(Deserialize)]
+struct TranscriptsResponse {
+    transcripts: Vec<TranscriptRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptRecord {
+    pub id: String,
+    pub raw: String,
+    pub formatted: String,
+    pub duration_ms: u64,
+    pub app_name: Option<String>,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn list_transcripts(app: AppHandle) -> Result<Vec<TranscriptRecord>, String> {
+    let ctx = session_context(&app)?;
+    let response = api::json::<TranscriptsResponse, ()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::GET,
+        "/api/transcripts?limit=40",
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(response.transcripts)
+}
+
+#[tauri::command]
+pub async fn delete_transcript(app: AppHandle, id: String) -> Result<(), String> {
+    let ctx = session_context(&app)?;
+    api::send::<()>(
+        &ctx.api_base,
+        &ctx.token,
+        Method::DELETE,
+        &format!("/api/transcripts/{id}"),
+        ctx.org_id.as_deref(),
+        None,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Copy arbitrary text (Hub history rows) to the clipboard.
+///
+/// The Hub confirms with its own toast; popping the listening pill at the
+/// bottom of the screen as well was a second, distant confirmation.
+#[tauri::command]
+pub fn copy_text(text: String) -> Result<(), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Nothing to copy.".into());
+    }
+    inject::copy_to_clipboard(trimmed).map_err(|error| error.to_string())
+}
+
+/// Settled one- or two-key chord — used by Hub “Hold keys…” capture.
+#[tauri::command]
+pub fn poll_held_hotkey() -> Option<String> {
+    hotkey::settled_held_accelerator()
+}
+
+/// Open a URL in the system browser (dashboard, docs).
+#[tauri::command]
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    open_in_browser(&app, &url)
 }

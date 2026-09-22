@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import type { RefreshRequest, TokenPair } from "@weldspeak/protocol";
 import type { AppBindings } from "./middleware.js";
 import { listOrgMemberships } from "./clerk.js";
+import { resolveEntitlement } from "../billing/entitlements.js";
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -72,11 +73,16 @@ refreshRoutes.post("/refresh", async (c) => {
     return c.json({ error: "unauthorized", message: "Refresh token expired" }, 401);
   }
 
-  // Re-read memberships from Clerk rather than trusting the previous token.
-  // This is what makes removal from an org actually take effect.
+  // Re-read memberships and billing from Clerk rather than trusting the
+  // previous token. This is what makes removal from an org — and plan changes —
+  // take effect within one refresh cycle.
   let orgs;
+  let entitlement;
   try {
-    orgs = await listOrgMemberships(c.env, row.clerk_user_id);
+    [orgs, entitlement] = await Promise.all([
+      listOrgMemberships(c.env, row.clerk_user_id),
+      resolveEntitlement(c.env, row.clerk_user_id),
+    ]);
   } catch {
     // Clerk being unreachable must not silently widen access, but it also
     // should not sign every user out during a Clerk outage. Fail the refresh;
@@ -92,6 +98,7 @@ refreshRoutes.post("/refresh", async (c) => {
     row.clerk_user_id,
     row.device_id,
     orgs,
+    entitlement,
   );
 
   const nextRefreshToken = generateRefreshToken();

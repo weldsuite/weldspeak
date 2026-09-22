@@ -23,6 +23,7 @@ import type {
 import type { AppBindings, AppContext } from "./middleware.js";
 import { requireAuth } from "./middleware.js";
 import { listOrgMemberships } from "./clerk.js";
+import { resolveEntitlement } from "../billing/entitlements.js";
 import {
   generateRefreshToken,
   hashRefreshToken,
@@ -85,8 +86,17 @@ async function issueTokens(
   userId: string,
   deviceId: string,
 ): Promise<TokenPair> {
-  const orgs = await listOrgMemberships(c.env, userId);
-  const { token: accessToken, expiresIn } = await mintAccessToken(c.env, userId, deviceId, orgs);
+  const [orgs, entitlement] = await Promise.all([
+    listOrgMemberships(c.env, userId),
+    resolveEntitlement(c.env, userId),
+  ]);
+  const { token: accessToken, expiresIn } = await mintAccessToken(
+    c.env,
+    userId,
+    deviceId,
+    orgs,
+    entitlement,
+  );
 
   const refreshToken = generateRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000).toISOString();

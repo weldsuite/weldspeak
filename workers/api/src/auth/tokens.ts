@@ -11,6 +11,7 @@
 
 import type { OrgMembership } from "@weldspeak/protocol";
 import type { Env } from "../env.js";
+import type { Entitlement } from "../billing/entitlements.js";
 
 /** Access token lifetime. Short enough that a revoked membership stops
  *  working quickly, long enough not to churn on a laptop that sleeps. */
@@ -37,6 +38,11 @@ export interface AccessTokenClaims {
    * Clerk on every token refresh, so it is at most one refresh cycle stale.
    */
   orgs: Array<{ id: string; role: string }>;
+  /**
+   * Billing entitlement snapshot from Clerk at mint/refresh time.
+   * Missing on pre-billing tokens — treat as `"free"`.
+   */
+  entitlement?: Entitlement;
   iat: number;
   exp: number;
 }
@@ -71,6 +77,7 @@ export async function mintAccessToken(
   userId: string,
   deviceId: string,
   orgs: OrgMembership[],
+  entitlement: Entitlement = "free",
 ): Promise<{ token: string; expiresIn: number }> {
   const now = Math.floor(Date.now() / 1000);
   const claims: AccessTokenClaims = {
@@ -78,6 +85,7 @@ export async function mintAccessToken(
     sub: userId,
     did: deviceId,
     orgs: orgs.map((org) => ({ id: org.orgId, role: org.role })),
+    entitlement,
     iat: now,
     exp: now + ACCESS_TOKEN_TTL_SECONDS,
   };
@@ -133,6 +141,17 @@ export async function verifyAccessToken(
   if (typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000)) return null;
   if (typeof claims.sub !== "string" || typeof claims.did !== "string") return null;
   if (!Array.isArray(claims.orgs)) return null;
+  if (
+    claims.entitlement != null &&
+    claims.entitlement !== "free" &&
+    claims.entitlement !== "paid" &&
+    claims.entitlement !== "weldsuite"
+  ) {
+    return null;
+  }
+  if (claims.entitlement == null) {
+    claims.entitlement = "free";
+  }
 
   return claims;
 }

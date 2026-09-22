@@ -48,6 +48,37 @@ function normalizeRole(role: string | undefined): OrgRole | null {
 }
 
 /**
+ * `@clerk/backend` has shipped both shapes:
+ *
+ *   - the public export, wrapped by `withLegacyReturn`, yields claims or throws;
+ *   - the unwrapped helper yields `{ data }` / `{ errors }` and does not throw.
+ *
+ * Treat either as success if a `sub` is present, otherwise as a rejected session.
+ */
+function sessionClaimsFrom(result: unknown): ClerkSessionClaims | null {
+  if (!result || typeof result !== "object") return null;
+
+  const record = result as { data?: unknown; sub?: unknown };
+  const candidates: unknown[] = [record];
+  if (record.data && typeof record.data === "object") {
+    candidates.push(record.data);
+  }
+
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      typeof (candidate as ClerkSessionClaims).sub === "string" &&
+      (candidate as ClerkSessionClaims).sub
+    ) {
+      return candidate as ClerkSessionClaims;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Verify a Clerk session token from the browser.
  *
  * Returns null rather than throwing, so callers reply 401 uniformly instead of
@@ -58,16 +89,27 @@ export async function verifyClerkSession(
   env: Env,
   token: string,
 ): Promise<VerifiedClerkSession | null> {
-  let claims: ClerkSessionClaims;
-  try {
-    claims = (await verifyToken(token, {
-      secretKey: env.CLERK_SECRET_KEY,
-    })) as unknown as ClerkSessionClaims;
-  } catch {
+  if (!env.CLERK_SECRET_KEY) {
+    console.error("CLERK_SECRET_KEY is not set; browser sessions cannot be verified");
     return null;
   }
 
-  if (!claims.sub) return null;
+  let result: unknown;
+  try {
+    result = await verifyToken(token, {
+      secretKey: env.CLERK_SECRET_KEY,
+      clockSkewInMs: 10_000,
+    });
+  } catch (error) {
+    console.warn("clerk session rejected", error);
+    return null;
+  }
+
+  const claims = sessionClaimsFrom(result);
+  if (!claims) {
+    console.warn("clerk session rejected", result);
+    return null;
+  }
 
   const activeOrgId = claims.o?.id ?? claims.org_id ?? null;
   const activeOrgRole = normalizeRole(claims.o?.rol ?? claims.org_role);
@@ -99,6 +141,38 @@ export async function listOrgMemberships(
     name: membership.organization.name,
     slug: membership.organization.slug ?? null,
     role: normalizeRole(membership.role) ?? "org:member",
+  }));
+}
+
+/**
+ * Attach display names to the memberships carried in a desktop token.
+ *
+ * The token stays the authority on *which* orgs and roles apply — an org the
+ * user joined after the token was minted is not added here, and one they left
+ * is not dropped; the next refresh handles both. Clerk only supplies names. If
+ * Clerk is unreachable the IDs are returned, which is ugly but still usable.
+ */
+export async function nameTokenOrgs(
+  env: Env,
+  userId: string,
+  tokenOrgs: ReadonlyArray<{ id: string; role: OrgMembership["role"] }>,
+): Promise<OrgMembership[]> {
+  if (tokenOrgs.length === 0) return [];
+
+  let known = new Map<string, OrgMembership>();
+  try {
+    known = new Map(
+      (await listOrgMemberships(env, userId)).map((membership) => [membership.orgId, membership]),
+    );
+  } catch (error) {
+    console.warn("could not load organization names", error);
+  }
+
+  return tokenOrgs.map((org) => ({
+    orgId: org.id,
+    name: known.get(org.id)?.name ?? org.id,
+    slug: known.get(org.id)?.slug ?? null,
+    role: org.role,
   }));
 }
 
