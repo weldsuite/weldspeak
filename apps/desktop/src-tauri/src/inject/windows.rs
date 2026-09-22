@@ -109,6 +109,48 @@ pub fn send_paste_shortcut() -> Result<()> {
     ])
 }
 
+/// Executable name of the foreground window's process, without `.exe`.
+///
+/// `PROCESS_QUERY_LIMITED_INFORMATION` is enough for the image path and is
+/// granted even for elevated processes, so this works for most windows.
+pub fn focused_app_name() -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(foreground, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let queried = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        );
+        let _ = CloseHandle(process);
+        queried.ok()?;
+
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        std::path::Path::new(&path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+    }
+}
+
 /// Text in the focused control, if this is a native field we can read.
 pub fn focused_text() -> Option<String> {
     use windows::Win32::Foundation::{LPARAM, WPARAM};

@@ -133,6 +133,19 @@ pub fn send_paste_shortcut() -> Result<()> {
     Ok(())
 }
 
+/// Localized name of the frontmost application.
+///
+/// `NSWorkspace` needs no Accessibility permission and, unlike the event APIs
+/// above, is safe to call off the main thread.
+pub fn focused_app_name() -> Option<String> {
+    use objc2_app_kit::NSWorkspace;
+
+    unsafe {
+        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        app.localizedName().map(|name| name.to_string())
+    }
+}
+
 /// Text in the focused control, if Accessibility will tell us.
 pub fn focused_text() -> Option<String> {
     use core_foundation::base::TCFType;

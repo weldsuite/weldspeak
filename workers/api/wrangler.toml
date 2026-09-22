@@ -49,7 +49,7 @@ new_sqlite_classes = ["DictationSession"]
 
 [vars]
 APP_URL = "https://weldspeak.weldsuite.org"
-CLEANUP_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+CLEANUP_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # Streaming STT via Workers AI. Keep Nova-3 for hold-to-talk: lowest latency on
 # AA-WER Streaming among accurate options already wired here. Flux is faster but
 # higher WER; ElevenLabs Scribe is more accurate but is not a Workers AI model

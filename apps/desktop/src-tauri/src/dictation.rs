@@ -247,7 +247,9 @@ fn open_socket(app: &AppHandle) {
         // The server merges the org glossary itself; sending terms from here
         // would let a client probe another org's vocabulary by guessing.
         keyterms: None,
-        app_name: None,
+        // Read now, on hotkey-down: the app in front is the one the text is
+        // going into, and cleanup styles a prompt differently from an email.
+        app_name: crate::inject::focused_app_name(),
         format: Some(format),
         // "Keep my dictations" off: ask the server not to store this one.
         retain: Some(keep_history),

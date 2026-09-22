@@ -10,19 +10,22 @@
 import { describe, expect, it } from "vitest";
 import type { DictionaryTerm } from "@weldspeak/protocol";
 import {
+  appStyle,
   buildCleanupPrompt,
+  cleanupDeadlineMs,
   cleanupTranscript,
+  judgeCleanup,
   looksLikeAssistantReply,
-  preservesDictation,
   stripModelChatter,
   CLEANUP_TIMEOUT_MS,
+  MAX_CLEANUP_TIMEOUT_MS,
 } from "../src/format.js";
 import type { Env } from "../src/env.js";
 
 /** An Env carrying only what cleanup touches, with a scripted model. */
 function envWith(run: (model: string, input: unknown) => Promise<unknown>): Env {
   return {
-    CLEANUP_MODEL: "@cf/meta/llama-4-scout-17b-16e-instruct",
+    CLEANUP_MODEL: "@cf/google/gemma-4-26b-a4b-it",
     AI: { run: (model: string, input: unknown) => run(model, input) },
   } as unknown as Env;
 }
@@ -39,24 +42,45 @@ const term = (name: string, soundsLike: string | null = null): DictionaryTerm =>
 
 describe("prompt construction", () => {
   it("wraps the transcript as data so a question is not treated as a chat turn", () => {
-    const prompt = buildCleanupPrompt("what time is the meeting", []);
+    const prompt = buildCleanupPrompt("what time is the meeting", { terms: [] });
 
-    expect(prompt).toContain("<dictation>");
+    expect(prompt).toContain("<transcript>");
     expect(prompt).toContain("what time is the meeting");
     expect(prompt).toMatch(/never an answer/i);
   });
 
   it("supplies glossary terms as spelling context", () => {
-    const prompt = buildCleanupPrompt("we used inconel", [term("Inconel 625")]);
+    const prompt = buildCleanupPrompt("we used inconel", { terms: [term("Inconel 625")] });
 
     expect(prompt).toContain("Inconel 625");
     expect(prompt).toContain("we used inconel");
-    expect(prompt).toContain("<dictation>");
+    expect(prompt).toContain("<transcript>");
   });
 
   it("includes phonetic hints when a term has one", () => {
-    const prompt = buildCleanupPrompt("x", [term("Inconel 625", "in-co-nel six twenty five")]);
+    const prompt = buildCleanupPrompt("x", { terms: [term("Inconel 625", "in-co-nel six twenty five")] });
     expect(prompt).toContain("sounds like: in-co-nel six twenty five");
+  });
+
+  it("adds a style hint for the destination app", () => {
+    expect(buildCleanupPrompt("x", { terms: [], appName: "Cursor" })).toMatch(/prompt for an AI/);
+    expect(buildCleanupPrompt("x", { terms: [], appName: "Outlook" })).toMatch(/email/);
+    // Unknown apps and browsers get no hint rather than a wrong one.
+    expect(buildCleanupPrompt("x", { terms: [], appName: "Firefox" })).not.toMatch(/Destination/);
+  });
+
+  it("buckets apps by name", () => {
+    expect(appStyle("Code")).toBe("code");
+    expect(appStyle("Claude")).toBe("code");
+    expect(appStyle("WindowsTerminal")).toBe("code");
+    expect(appStyle("idea64")).toBe("code");
+    expect(appStyle("Visual Studio Code")).toBe("code");
+    expect(appStyle("olk")).toBe("email");
+    expect(appStyle("ms-teams")).toBe("chat");
+    expect(appStyle("Slack")).toBe("chat");
+    expect(appStyle("Mail")).toBe("email");
+    expect(appStyle("chrome")).toBe("default");
+    expect(appStyle(null)).toBe("default");
   });
 });
 
@@ -85,6 +109,13 @@ describe("stripping model chatter", () => {
     expect(stripModelChatter("The weld looks good.")).toBe("The weld looks good.");
   });
 
+  it("drops a thinking trace that has only a closing tag", () => {
+    // GLM-5.3-flash does this despite enable_thinking: false.
+    expect(
+      stripModelChatter('The transcript: "um the weld looks uh good"\nRemove filler.</think>The weld looks good.'),
+    ).toBe("The weld looks good.");
+  });
+
   it("drops a thinking trace if the model ignored enable_thinking: false", () => {
     expect(stripModelChatter("<think>fix punctuation</think>\nThe weld looks good.")).toBe(
       "The weld looks good.",
@@ -106,11 +137,51 @@ describe("reply detection", () => {
   });
 
   it("rejects an answer that does not keep the dictated words", () => {
-    expect(preservesDictation("what is two plus two", "4")).toBe(false);
+    expect(judgeCleanup("what is the capital of portugal", "Lisbon.").ok).toBe(false);
   });
 
   it("accepts a cleanup that keeps the utterance", () => {
-    expect(preservesDictation("um the weld looks uh good", "The weld looks good.")).toBe(true);
+    expect(judgeCleanup("um the weld looks uh good", "The weld looks good.").ok).toBe(true);
+  });
+
+  it("accepts a self-correction that drops the abandoned words", () => {
+    expect(judgeCleanup("send it to john wait to sarah", "Send it to Sarah.").ok).toBe(true);
+    expect(
+      judgeCleanup(
+        "let's meet on thursday no actually wednesday after lunch",
+        "Let's meet on Wednesday after lunch.",
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("accepts misheard-word fixes and dictated symbols", () => {
+    expect(
+      judgeCleanup("open index dot ts and rename user underscore id", "Open index.ts and rename user_id.").ok,
+    ).toBe(true);
+  });
+});
+
+describe("rejecting shortened cleanups", () => {
+  const prompt =
+    "refactor the auth middleware so it checks the device token first and only falls back to the clerk session when there is no device token keep the error messages identical because the desktop app matches on them leave the refresh logic alone and add tests for the fallback path";
+
+  it("accepts a full cleanup of a long prompt", () => {
+    const cleaned =
+      "Refactor the auth middleware so it checks the device token first and only falls back to the Clerk session when there is no device token. Keep the error messages identical, because the desktop app matches on them. Leave the refresh logic alone, and add tests for the fallback path.";
+    expect(judgeCleanup(prompt, cleaned)).toEqual({ ok: true });
+  });
+
+  it("rejects a cleanup that stops before the end", () => {
+    // Losing only the last clause is a small share of the words, which the old
+    // half-the-words check let through. The tail check catches it.
+    const cutOff =
+      "Refactor the auth middleware so it checks the device token first and only falls back to the Clerk session when there is no device token. Keep the error messages identical, because the desktop app matches on them. Leave the refresh logic alone.";
+    expect(judgeCleanup(prompt, cutOff)).toEqual({ ok: false, reason: "cut_off" });
+  });
+
+  it("rejects a summary", () => {
+    const summary = "Refactor auth middleware to prefer device tokens, keep errors, add tests.";
+    expect(judgeCleanup(prompt, summary)).toEqual({ ok: false, reason: "dropped_words" });
   });
 });
 
@@ -131,7 +202,7 @@ describe("cleanup", () => {
     expect(result).toEqual({ text: "The weld looks good.", formatted: true });
   });
 
-  it("passes the configured model and a low temperature", async () => {
+  it("passes the configured model, greedy decoding, and the app name", async () => {
     let seenModel = "";
     let seenInput: Record<string, unknown> = {};
 
@@ -141,17 +212,18 @@ describe("cleanup", () => {
       return { response: "Hello." };
     });
 
-    await cleanupTranscript(env, "hello", []);
+    await cleanupTranscript(env, "hello", [], { appName: "Cursor" });
 
-    expect(seenModel).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
-    // Cleanup is near-greedy polish; stay ≤0.2 so the model does not wander.
-    expect(seenInput.temperature).toBeLessThanOrEqual(0.2);
+    expect(seenModel).toBe("@cf/google/gemma-4-26b-a4b-it");
+    // Cleanup copies with corrections; greedy decoding keeps it on the speaker's words.
+    expect(seenInput.temperature).toBe(0);
     expect(
       (seenInput.chat_template_kwargs as { enable_thinking?: boolean } | undefined)
         ?.enable_thinking,
     ).toBe(false);
     const messages = seenInput.messages as Array<{ content: string }>;
-    expect(messages[1]?.content).toContain("<dictation>");
+    expect(messages[1]?.content).toContain("<transcript>");
+    expect(messages[1]?.content).toContain("Destination: Cursor");
   });
 
   it("ships the raw transcript when the model exceeds its deadline", async () => {
@@ -160,7 +232,7 @@ describe("cleanup", () => {
     );
 
     const started = Date.now();
-    const result = await cleanupTranscript(env, "raw words here", [], 50);
+    const result = await cleanupTranscript(env, "raw words here", [], { timeoutMs: 50 });
     const elapsed = Date.now() - started;
 
     expect(result).toEqual({ text: "raw words here", formatted: false });
@@ -228,8 +300,37 @@ describe("cleanup", () => {
     expect(called).toBe(false);
   });
 
+  it("ships the raw transcript when the model ran out of tokens", async () => {
+    const env = envWith(async () => ({
+      choices: [{ message: { content: "The weld looks" }, finish_reason: "length" }],
+    }));
+    const result = await cleanupTranscript(env, "um the weld looks uh good", []);
+
+    expect(result).toEqual({ text: "um the weld looks uh good", formatted: false });
+  });
+
+  it("ships the raw transcript when the model cut a long prompt short", async () => {
+    const raw =
+      "please update the readme with the new install steps then bump the version in package json and finally tag the release on github";
+    const result = await cleanupTranscript(
+      respondWith("Please update the README with the new install steps, then bump the version in package.json."),
+      raw,
+      [],
+    );
+
+    expect(result).toEqual({ text: raw, formatted: false });
+  });
+
   it("defaults to a deadline the cleanup model can actually meet", () => {
     expect(CLEANUP_TIMEOUT_MS).toBeGreaterThanOrEqual(2_000);
     expect(CLEANUP_TIMEOUT_MS).toBeLessThanOrEqual(4_000);
+  });
+
+  it("gives long dictations more time, up to a ceiling", () => {
+    expect(cleanupDeadlineMs("short")).toBeLessThan(CLEANUP_TIMEOUT_MS + 100);
+    // A long AI prompt (~1,300 characters) took ~4 s on Llama 4 Scout; a fixed
+    // 2.5 s deadline shipped every one of them raw.
+    expect(cleanupDeadlineMs("x".repeat(1_300))).toBeGreaterThan(5_000);
+    expect(cleanupDeadlineMs("x".repeat(100_000))).toBe(MAX_CLEANUP_TIMEOUT_MS);
   });
 });

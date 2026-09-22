@@ -125,6 +125,16 @@ pub fn focused_text() -> Option<String> {
     platform::focused_text()
 }
 
+/// Name of the frontmost application ("Code", "Slack", "Outlook").
+///
+/// Sent with each dictation so cleanup can match the destination, the way
+/// Wispr Flow formats a prompt in an editor differently from an email.
+pub fn focused_app_name() -> Option<String> {
+    platform::focused_app_name()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 fn set_clipboard(text: &str) -> Result<()> {
     arboard::Clipboard::new()?.set_text(text.to_string())?;
     Ok(())

@@ -393,7 +393,7 @@ export class DictationSession extends DurableObject<Env> {
       : [];
 
     const { text, formatted } = shouldFormat
-      ? await cleanupTranscript(this.env, raw, terms)
+      ? await cleanupTranscript(this.env, raw, terms, { appName: this.#appName })
       : { text: raw, formatted: false };
 
     this.#send({ type: "result", text, raw, formatted, durationMs });
