@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import type { OrgSettings, UsageSummary } from "@weldspeak/protocol";
 import type { AppBindings } from "../auth/middleware.js";
 import { requireAuth, requireOrg, requireOrgAdmin } from "../auth/middleware.js";
+import { monthlyWordCap } from "../billing/entitlements.js";
 
 interface SettingsRow {
   clerk_org_id: string;
@@ -67,6 +68,19 @@ export async function orgUsageSeconds(db: D1Database, orgId: string | null): Pro
   return row?.total ?? 0;
 }
 
+/** Words a single person has dictated this calendar month (all orgs). */
+export async function userWordCount(db: D1Database, userId: string): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(word_count), 0) AS total
+         FROM usage WHERE clerk_user_id = ? AND day >= ?`,
+    )
+    .bind(userId, currentPeriodStart())
+    .first<{ total: number }>();
+
+  return row?.total ?? 0;
+}
+
 export const orgRoutes = new Hono<AppBindings>();
 
 orgRoutes.use("*", requireAuth());
@@ -118,37 +132,49 @@ orgRoutes.patch("/settings", requireOrgAdmin(), async (c) => {
 });
 
 orgRoutes.get("/usage", async (c) => {
-  const { userId, activeOrg } = c.get("auth");
+  const { userId, activeOrg, entitlement } = c.get("auth");
   const orgId = activeOrg?.id ?? null;
   const periodStart = currentPeriodStart();
 
   const settings = await loadOrgSettings(c.env.DB, orgId);
   const audioSeconds = await orgUsageSeconds(c.env.DB, orgId);
+  const wordCount = await userWordCount(c.env.DB, userId);
 
   // Non-admins see only their own consumption; the per-member breakdown is an
   // admin view.
   const isAdmin = activeOrg?.role === "org:admin";
   const { results } = isAdmin
     ? await c.env.DB.prepare(
-        `SELECT clerk_user_id AS userId, SUM(audio_seconds) AS audioSeconds
+        `SELECT clerk_user_id AS userId,
+                SUM(audio_seconds) AS audioSeconds,
+                SUM(word_count) AS wordCount
            FROM usage WHERE clerk_org_id = ? AND day >= ?
           GROUP BY clerk_user_id ORDER BY audioSeconds DESC`,
       )
         .bind(orgId ?? "", periodStart)
-        .all<{ userId: string; audioSeconds: number }>()
+        .all<{ userId: string; audioSeconds: number; wordCount: number }>()
     : await c.env.DB.prepare(
-        `SELECT clerk_user_id AS userId, SUM(audio_seconds) AS audioSeconds
+        `SELECT clerk_user_id AS userId,
+                SUM(audio_seconds) AS audioSeconds,
+                SUM(word_count) AS wordCount
            FROM usage WHERE clerk_org_id = ? AND day >= ? AND clerk_user_id = ?
           GROUP BY clerk_user_id`,
       )
         .bind(orgId ?? "", periodStart, userId)
-        .all<{ userId: string; audioSeconds: number }>();
+        .all<{ userId: string; audioSeconds: number; wordCount: number }>();
 
   return c.json({
     orgId,
     periodStart,
     audioSeconds,
     monthlyMinuteCap: settings?.monthlyMinuteCap ?? null,
-    byUser: results,
+    wordCount,
+    monthlyWordCap: monthlyWordCap(entitlement),
+    entitlement,
+    byUser: results.map((row) => ({
+      userId: row.userId,
+      audioSeconds: row.audioSeconds,
+      wordCount: row.wordCount ?? 0,
+    })),
   } satisfies UsageSummary);
 });

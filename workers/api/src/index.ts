@@ -3,7 +3,8 @@
  *
  * Serves three things from one deployment: the JSON API, the dictation
  * WebSocket, and the static web dashboard. Production hostname is
- * `api.weldspeak.com` (marketing lives on Vercel at `weldspeak.com`).
+ * `weldspeak.weldsuite.org`, with `api.weldspeak.com` as a second name for the
+ * same Worker (marketing lives on Vercel at `weldspeak.com`).
  * Co-hosting the dashboard on the API host keeps the browser same-origin, so
  * the device-approval path has no CORS preflight.
  */
@@ -16,7 +17,8 @@ import { requireAuth } from "./auth/middleware.js";
 import { deviceRoutes } from "./auth/device.js";
 import { refreshRoutes } from "./auth/refresh.js";
 import { webhookRoutes } from "./auth/webhook.js";
-import { getUserProfile, listOrgMemberships } from "./auth/clerk.js";
+import { getUserProfile, listOrgMemberships, nameTokenOrgs } from "./auth/clerk.js";
+import { monthlyWordCap } from "./billing/entitlements.js";
 import { dictionaryRoutes } from "./routes/dictionary.js";
 import { transcriptRoutes } from "./routes/transcripts.js";
 import { orgRoutes } from "./routes/org.js";
@@ -37,17 +39,25 @@ app.route("/api/transcripts", transcriptRoutes);
 app.route("/api/org", orgRoutes);
 
 app.get("/api/me", requireAuth(), async (c) => {
-  const { userId, orgs: tokenOrgs, deviceId } = c.get("auth");
+  const { userId, orgs: tokenOrgs, deviceId, entitlement } = c.get("auth");
 
   const profile = await getUserProfile(c.env, userId);
 
   // A browser caller's token names only its active org, so memberships come
-  // from Clerk. A desktop token already carries the full list.
+  // from Clerk. A desktop token already carries the authoritative list, but
+  // only IDs — the app showed "org_3J6A…" as the organization name. Names are
+  // looked up for display; membership still comes from the token alone.
   const orgs = deviceId
-    ? tokenOrgs.map((org) => ({ orgId: org.id, name: org.id, slug: null, role: org.role }))
+    ? await nameTokenOrgs(c.env, userId, tokenOrgs)
     : await listOrgMemberships(c.env, userId);
 
-  return c.json({ userId, ...profile, orgs } satisfies MeResponse);
+  return c.json({
+    userId,
+    ...profile,
+    orgs,
+    entitlement,
+    monthlyWordCap: monthlyWordCap(entitlement),
+  } satisfies MeResponse);
 });
 
 /**
@@ -83,7 +93,11 @@ app.get("/v1/stream", async (c) => {
     );
   }
 
-  const identity: SessionIdentity = { userId: claims.sub, orgId: requestedOrgId };
+  const identity: SessionIdentity = {
+    userId: claims.sub,
+    orgId: requestedOrgId,
+    entitlement: claims.entitlement ?? "free",
+  };
 
   // One DO per connection: a dictation is a single utterance with no state to
   // share, so a fresh ID avoids any cross-session interference.

@@ -4,12 +4,24 @@
 //! it works has already failed; these are the choices people genuinely differ
 //! on, and everything else has a defensible default.
 
-use serde::{Deserialize, Serialize};
-use weldspeak_core::inject::Preference;
 use crate::hotkey::Binding;
+use crate::snippets::Snippet;
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use weldspeak_core::inject::Preference;
 
 /// Where the API lives. Overridable for local development.
-pub const DEFAULT_API_BASE: &str = "https://api.weldspeak.com";
+pub const DEFAULT_API_BASE: &str = "https://weldspeak.weldsuite.org";
+
+/// Hosts from earlier drafts. If a saved settings file still points at one of
+/// these, rewrite it to the live hostname so an old file cannot silently send
+/// sign-in at a domain that does not exist.
+const LEGACY_API_BASES: &[&str] = &[
+    "https://app.weldspeak.io",
+    "https://api.weldspeak.io",
+    "https://weldspeak.com",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -36,6 +48,30 @@ pub struct Settings {
     /// server flag wins and no local copy is written either. Storing the text
     /// of everything someone dictates is not a decision to make casually.
     pub keep_history: bool,
+
+    /// Pause or mute other apps' audio while dictating.
+    #[serde(default = "default_pause_media")]
+    pub pause_media: bool,
+
+    /// cpal input device name. None uses the system default microphone.
+    #[serde(default)]
+    pub microphone: Option<String>,
+
+    /// Spoken cues that expand to saved text.
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
+
+    /// Heard → meant pairs captured after the user edits a dictation.
+    #[serde(default)]
+    pub corrections: Vec<weldspeak_core::Correction>,
+
+    /// Glossary terms waiting to be uploaded, if sign-in had not happened yet.
+    #[serde(default)]
+    pub pending_terms: Vec<String>,
+
+    /// Running count of words inserted. Displayed in Settings, not synced.
+    #[serde(default)]
+    pub words_dictated: u64,
 }
 
 impl Default for Settings {
@@ -48,8 +84,64 @@ impl Default for Settings {
             clean_up_text: true,
             locale: None,
             keep_history: true,
+            pause_media: default_pause_media(),
+            microphone: None,
+            snippets: Vec::new(),
+            corrections: Vec::new(),
+            pending_terms: Vec::new(),
+            words_dictated: 0,
         }
     }
+}
+
+fn default_pause_media() -> bool {
+    cfg!(target_os = "windows")
+}
+
+impl Settings {
+    /// Load from disk, or the built-in defaults if the file is missing or junk.
+    pub fn load(path: &Path) -> Self {
+        let mut settings = match std::fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(_) => Self::default(),
+        };
+        settings.migrate_api_base();
+        settings.migrate_hotkey();
+        settings
+    }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(self).context("serializing settings")?;
+        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    fn migrate_api_base(&mut self) {
+        let trimmed = self.api_base.trim_end_matches('/');
+        if LEGACY_API_BASES.contains(&trimmed) {
+            self.api_base = DEFAULT_API_BASE.into();
+        }
+    }
+
+    fn migrate_hotkey(&mut self) {
+        if crate::hotkey::parse_codes(&self.hotkey.accelerator).is_none() {
+            self.hotkey = crate::hotkey::Binding::default();
+        }
+    }
+}
+
+/// `%APPDATA%\io.weldspeak.desktop\settings.json` on Windows.
+pub fn path_for(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("settings.json"))
 }
 
 /// Serializable mirror of `weldspeak_core::inject::Preference`.
@@ -87,6 +179,82 @@ mod tests {
         // anyone opens settings.
         assert!(settings.clean_up_text);
         assert_eq!(settings.injection, InjectionPreference::Automatic);
+        assert_eq!(settings.api_base, "https://weldspeak.weldsuite.org");
+        assert_eq!(settings.pause_media, default_pause_media());
+    }
+
+    #[test]
+    fn rewrites_legacy_api_hosts() {
+        let dir = std::env::temp_dir().join(format!("weldspeak-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"apiBase":"https://app.weldspeak.io"}"#).unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(settings.api_base, DEFAULT_API_BASE);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replaces_an_unholdable_hotkey() {
+        // An older shortcut-plugin chord would leave the watcher with nothing
+        // to listen for, so hold-to-talk appeared dead.
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-hk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":{"mode":"pushToTalk","accelerator":"CommandOrControl+Space"}}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(
+            settings.hotkey.accelerator,
+            crate::hotkey::default_accelerator()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_a_two_key_hold() {
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-chord-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hotkey":{"mode":"pushToTalk","accelerator":"ControlRight+MetaLeft"}}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load(&path);
+        assert_eq!(settings.hotkey.accelerator, "ControlRight+MetaLeft");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn round_trips_through_a_file() {
+        let dir =
+            std::env::temp_dir().join(format!("weldspeak-settings-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let original = Settings {
+            keep_history: false,
+            ..Settings::default()
+        };
+        original.save(&path).unwrap();
+
+        let loaded = Settings::load(&path);
+        assert!(!loaded.keep_history);
+        assert_eq!(loaded.api_base, DEFAULT_API_BASE);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -98,6 +266,7 @@ mod tests {
 
         assert_eq!(settings.api_base, "http://localhost:8787");
         assert!(settings.clean_up_text);
+        assert!(settings.microphone.is_none());
     }
 
     #[test]
@@ -117,7 +286,13 @@ mod tests {
 
     #[test]
     fn maps_onto_the_core_preference() {
-        assert_eq!(Preference::from(InjectionPreference::AlwaysType), Preference::AlwaysType);
-        assert_eq!(Preference::from(InjectionPreference::Automatic), Preference::Automatic);
+        assert_eq!(
+            Preference::from(InjectionPreference::AlwaysType),
+            Preference::AlwaysType
+        );
+        assert_eq!(
+            Preference::from(InjectionPreference::Automatic),
+            Preference::Automatic
+        );
     }
 }

@@ -54,6 +54,18 @@ pub fn begin(app: &AppHandle) {
         session.handle(SessionEvent::HotkeyDown)
     };
 
+    crate::learn::invalidate();
+    // Show the pill before the socket is up. Without this, a held key looks
+    // like nothing happened — the Wispr Flow complaint.
+    crate::overlay::appear_listening(app);
+    crate::media::pause_if_enabled(app);
+    // Retain speech spoken while the socket opens. Idle pre-roll is only 300 ms;
+    // without this, a quick tap finishes before `ready` and the utterance ages out.
+    if let Ok(capture) = state.capture.lock() {
+        if let Some(capture) = capture.as_ref() {
+            capture.hold();
+        }
+    }
     perform(app, actions);
 }
 
@@ -92,19 +104,33 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             Action::SendStop => {
                 send(app, Outbound::Control(ClientFrame::Stop));
                 let _ = app.emit("weldspeak://thinking", ());
+                crate::overlay::appear_thinking(app);
             }
             Action::SendCancel => {
                 send(app, Outbound::Control(ClientFrame::Cancel));
                 teardown(app);
             }
             Action::Inject { text } => {
-                let preference = app
-                    .state::<AppState>()
-                    .settings
-                    .lock()
-                    .map(|settings| settings.injection.into())
-                    .unwrap_or_default();
-
+                let (preference, snippets, corrections) = {
+                    let state = app.state::<AppState>();
+                    let settings = state.settings.lock().ok();
+                    let preference = settings
+                        .as_ref()
+                        .map(|settings| settings.injection.into())
+                        .unwrap_or_default();
+                    let snippets = settings
+                        .as_ref()
+                        .map(|settings| settings.snippets.clone())
+                        .unwrap_or_default();
+                    let corrections = settings
+                        .map(|settings| settings.corrections.clone())
+                        .unwrap_or_default();
+                    (preference, snippets, corrections)
+                };
+                let text = crate::snippets::expand(&text, &snippets);
+                let text = crate::learn::apply(&text, &corrections);
+                remember_transcript(app, &text);
+                crate::native_settings::on_history_changed(app, &text);
                 crate::inject_on_main_thread(app, text, preference);
 
                 // The injector reports completion by driving the machine on;
@@ -119,7 +145,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
             }
             Action::Teardown => teardown(app),
             Action::Notify { message } => {
-                let _ = app.emit("weldspeak://notice", message);
+                crate::overlay::show_notice(app, &message);
             }
         }
     }
@@ -128,7 +154,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
 fn open_socket(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    let (api_base, org_id, locale, format) = {
+    let (api_base, org_id, locale, format, keep_history) = {
         let Ok(settings) = state.settings.lock() else {
             return;
         };
@@ -137,15 +163,14 @@ fn open_socket(app: &AppHandle) {
             settings.org_id.clone(),
             settings.locale.clone(),
             settings.clean_up_text,
+            settings.keep_history,
         )
     };
 
-    let Some(access_token) = state
-        .auth
-        .lock()
-        .ok()
-        .and_then(|auth| auth.access_token(weldspeak_core::auth::now_secs()).map(str::to_owned))
-    else {
+    let Some(access_token) = state.auth.lock().ok().and_then(|auth| {
+        auth.access_token(weldspeak_core::auth::now_secs())
+            .map(str::to_owned)
+    }) else {
         fail(app, "Sign in to WeldSpeak before dictating.");
         return;
     };
@@ -169,6 +194,8 @@ fn open_socket(app: &AppHandle) {
         keyterms: None,
         app_name: None,
         format: Some(format),
+        // "Keep my dictations" off: ask the server not to store this one.
+        retain: Some(keep_history),
     }));
 
     let for_events = app.clone();
@@ -198,8 +225,8 @@ fn open_socket(app: &AppHandle) {
 fn start_streaming(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    // Arming hands back the pre-roll: the audio from just before the key went
-    // down, which is where the first syllable lives.
+    // Arming hands back everything held since hotkey-down (idle lead-in plus
+    // speech spoken while waiting for `ready`).
     let preroll = state
         .capture
         .lock()
@@ -224,10 +251,9 @@ fn handle_server_event(app: &AppHandle, event: ServerEvent) {
         match event {
             ServerEvent::Ready { .. } => session.handle(SessionEvent::Ready),
 
-            ServerEvent::Partial { text } => {
-                // Display only. Partials are revised as the recognizer gets more
-                // context; injecting one would type a word the user did not say.
-                let _ = app.emit("weldspeak://partial", text);
+            ServerEvent::Partial { .. } => {
+                // Wispr-style: the pill is waveform only. Partials are never
+                // shown — they would stretch the capsule as the user talks.
                 Vec::new()
             }
 
@@ -273,7 +299,26 @@ fn teardown(app: &AppHandle) {
         }
     }
 
-    let _ = app.emit("weldspeak://done", ());
+    crate::overlay::dismiss(app);
+    crate::media::resume(app);
+    if state.mic_dirty.load(std::sync::atomic::Ordering::SeqCst) {
+        crate::reopen_microphone(app);
+    }
+}
+
+fn remember_transcript(app: &AppHandle, text: &str) {
+    let state = app.state::<AppState>();
+    if let Ok(mut last) = state.last_transcript.lock() {
+        *last = Some(text.to_string());
+    }
+    let words = text.split_whitespace().count() as u64;
+    let path = crate::settings::path_for(app).ok();
+    if let Ok(mut settings) = state.settings.lock() {
+        settings.words_dictated = settings.words_dictated.saturating_add(words);
+        if let Some(path) = path {
+            let _ = settings.save(&path);
+        }
+    };
 }
 
 /// Drive the session into its failed state and tell the user.

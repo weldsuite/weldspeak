@@ -69,8 +69,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @weldspeak/desktop-ui build
 
-      # Both platforms are built on every PR. The injection code is entirely
-      # cfg-gated, so a change that compiles on one can fail on the other, and
-      # finding that out at release time is the expensive way.
+      # Both platforms are compiled on every PR so cfg-gated injection cannot
+      # break one OS unnoticed. Installers are a separate workflow
+      # (desktop.yml) so a PR does not spend minutes bundling NSIS/DMG.
       - run: cargo clippy -p weldspeak-desktop --all-targets -- -D warnings
       - run: cargo test -p weldspeak-desktop

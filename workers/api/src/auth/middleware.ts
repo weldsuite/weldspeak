@@ -17,6 +17,8 @@
 import type { Context, MiddlewareHandler, Next } from "hono";
 import type { OrgRole } from "@weldspeak/protocol";
 import type { Env } from "../env.js";
+import type { Entitlement } from "../billing/entitlements.js";
+import { resolveEntitlement } from "../billing/entitlements.js";
 import { verifyClerkSession } from "./clerk.js";
 import { verifyAccessToken } from "./tokens.js";
 
@@ -28,6 +30,8 @@ export interface AuthContext {
   orgs: Array<{ id: string; role: OrgRole }>;
   /** The org this request operates in, already verified. Null for personal scope. */
   activeOrg: { id: string; role: OrgRole } | null;
+  /** Billing entitlement: free (2k words/mo) or uncapped. */
+  entitlement: Entitlement;
 }
 
 export interface AppBindings {
@@ -95,8 +99,17 @@ export function requireAuth(): MiddlewareHandler<AppBindings> {
         deviceId: desktopClaims.did,
         orgs,
         activeOrg,
+        entitlement: desktopClaims.entitlement ?? "free",
       });
       return next();
+    }
+
+    if (!c.env.CLERK_SECRET_KEY) {
+      console.error("CLERK_SECRET_KEY is not set; browser sessions cannot be verified");
+      return c.json(
+        { error: "misconfigured", message: "Sign-in is not configured on the server." },
+        503,
+      );
     }
 
     const clerkSession = await verifyClerkSession(c.env, token);
@@ -113,11 +126,14 @@ export function requireAuth(): MiddlewareHandler<AppBindings> {
         ? { id: clerkSession.activeOrgId, role: clerkSession.activeOrgRole }
         : null;
 
+    const entitlement = await resolveEntitlement(c.env, clerkSession.userId);
+
     c.set("auth", {
       userId: clerkSession.userId,
       deviceId: null,
       orgs: activeOrg ? [activeOrg] : [],
       activeOrg,
+      entitlement,
     });
     return next();
   };

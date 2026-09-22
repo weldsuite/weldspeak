@@ -13,11 +13,10 @@ speak, so the text is ready the moment you release the key. Uploading a
 recording afterwards would add a second of dead air to every dictation, and
 that second is the difference between a tool people use and one they abandon.
 
-**Cleanup with a deadline.** The raw transcript is passed through a fast model
-that removes fillers and false starts and fixes punctuation. It runs against a
-hard 700 ms budget, and if it misses, the raw transcript ships instead. A
-slightly scruffy result that arrives instantly beats a polished one that
-arrives late.
+**Cleanup with a deadline.** The raw transcript is passed through a model that
+removes fillers and false starts and fixes punctuation. It runs against a
+2.5 s budget, and if it misses, the raw transcript ships instead. A slightly
+scruffy result that arrives instantly beats a polished one that arrives late.
 
 **Clerk stays in the browser.** Clerk session tokens live about a minute and
 refresh through cookies on your own domain, so a desktop app cannot hold one.
@@ -37,29 +36,26 @@ packages/protocol-rs      The same protocol, for Rust
 packages/dictation-core   Portable client logic: audio, session, injection policy
 workers/api               Cloudflare Worker: auth, dictation relay, org data
 apps/web                  Dashboard: sign-in, device approval, team, glossary
-apps/desktop              Tauri client: tray, hotkey, microphone, injection
+apps/desktop              Hub webview + native tray, listening pill, hotkey, injection
 ```
 
-### Shipped desktop vs `main` (read this before UI work)
+### How the desktop app ships
 
-Two desktop tracks exist. Mixing them up is how “merged UI refresh” demos fail to
-show up in the installed app.
+`main` is what installed copies run. Every push to `main` runs the **Desktop
+installers** workflow, which builds Windows and macOS installers and refreshes
+the rolling GitHub release `desktop` (`latest.json`). Installed apps read that
+release on launch and update themselves.
 
-| Track | Branch | What the user sees | How it ships |
-| --- | --- | --- | --- |
-| **Installed app** | `ci/desktop` | Native Hub + listening pill (Win32 / AppKit). No settings webview. | **Desktop installers** workflow → rolling GitHub release tag `desktop` (`latest.json`). Auto-update reads that release. |
-| **Webview shell on `main`** | `main` | Vite/Tauri settings window + overlay HTML (`apps/desktop/src/*.ts`, `styles.css`) | Local `pnpm --filter @weldspeak/desktop-ui dev` / `tauri dev` only. Main CI does **not** publish installers. |
-
-Merging CSS/HTML changes to `main` (e.g. a visual refresh of `settings.ts`) does
-**not** change what a downloaded DMG/EXE shows. To change the product Gert runs,
-restyle the native Hub/overlay on `ci/desktop` and push that branch (or cut a
-`v*` tag) so a newer `0.1.x` lands on the `desktop` release.
+The Hub window is a Tauri webview (`apps/desktop/src/hub.ts`, `styles.css`);
+the listening pill, hotkey watcher and text injection are native Rust
+(`apps/desktop/src-tauri`).
 
 ## Setup
 
-Needs Node 22+, pnpm 10+, and Rust stable. Building the desktop app also needs
-the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform.
+Needs Node 22+ and pnpm 10+. The desktop **installer** is built by GitHub
+Actions — you do not install Rust or Visual Studio to use WeldSpeak. Rust and
+the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) are only
+required if you compile the desktop app on your own machine.
 
 ```bash
 pnpm install
@@ -102,15 +98,98 @@ For the dashboard:
 cp apps/web/.env.example apps/web/.env.local   # add your pk_...
 ```
 
+### Billing
+
+Per-person Clerk Billing (B2C): **$10 / person / month**, free tier **2,000
+words / calendar month (UTC)**. Paid and WeldSuite-included users are uncapped.
+
+Dashboard setup (plan slug `weldspeak`, features `unlimited_words` and
+`weldsuite`) is documented in [`docs/clerk-billing.md`](docs/clerk-billing.md).
+Checkout lives at `/pricing`.
+
 ### 3. Run it
+
+The desktop Hub is a Tauri **webview** (Home, Dictionary, Snippets, Settings).
+Dictation, hotkeys, injection, and the compact listening pill stay native.
+Open WeldSpeak from the tray; hold the hotkey, speak, release, and the text
+appears wherever you were typing.
 
 ```bash
 pnpm --filter @weldspeak/web dev     # dashboard on :5173
 pnpm --filter @weldspeak/api dev     # Worker on :8787
+# Hub UI only (browser preview, no tray/dictation):
+pnpm --filter @weldspeak/desktop-ui dev
+# Full desktop app (needs Tauri prerequisites):
 pnpm --filter @weldspeak/desktop-ui tauri dev
 ```
 
-In the desktop app, set the API base to `http://localhost:8787` and sign in.
+Pushing to `main` ships: the installer workflow publishes a newer `0.1.x` to
+the rolling `desktop` release, and installed apps update on their next launch.
+Debug builds skip that launch-time install so a local build is not replaced by
+the release.
+
+The desktop app talks to `https://weldspeak.weldsuite.org` by default. For a local
+Worker, point `apiBase` at `http://localhost:8787` in
+`%APPDATA%\io.weldspeak.desktop\settings.json`.
+
+## Desktop installers
+
+GitHub Actions builds the Windows `.exe` and macOS `.dmg`. You never need
+Rust on the machine that will run WeldSpeak.
+
+- **Actions → Desktop installers → Run workflow** — grab the artifact
+- **git tag `v0.1.0` and push** — same files, plus a GitHub Release
+
+Unsigned Windows builds will trip SmartScreen until a code-signing certificate
+is in the workflow. That is expected for a first personal install: More info →
+Run anyway.
+
+### In-app updates
+
+Installed apps read
+`https://github.com/weldsuite/weldspeak/releases/download/desktop/latest.json`
+(Tauri updater). On launch the desktop process checks quietly and installs when
+a newer signed build is present. The Hub also probes the same feed and shows an
+**Update** control when a newer version is available; clicking it runs the same
+download → install → restart path.
+
+Repo secrets required for updater artifacts (set in GitHub → Settings →
+Secrets):
+
+| Secret | Purpose |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | Minisign private key; enables `--config bundle.createUpdaterArtifacts` in Desktop installers |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that key (omit if the key is unencrypted) |
+
+The matching **public** key is committed in
+`apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater.pubkey`. Without the
+private key, CI still builds installers but skips `.sig` / updater tarballs and
+cannot refresh `latest.json`.
+
+## Production
+
+Deployed to the `WeldSuite` Cloudflare account as the Worker `weldspeak-api`,
+serving the API, the dictation WebSocket and the dashboard from one hostname:
+
+```
+https://weldspeak.weldsuite.org                    primary (desktop default, APP_URL)
+https://api.weldspeak.com                          secondary custom domain
+https://weldspeak-api.fragrant-cake-015a.workers.dev   fallback
+```
+
+The `workers.dev` hostname is kept enabled alongside the custom domains, so
+there is still a way in if a domain is mid-migration or a certificate is
+provisioning.
+
+### Choosing the cleanup model
+
+`CLEANUP_MODEL` is `@cf/meta/llama-4-scout-17b-16e-instruct`. It clears the
+2.5 s cleanup deadline with room to spare, follows rewrite instructions well,
+and thinking is turned off on the request so a reasoning trace cannot leak into
+the inserted text.
+
+The glossary still matters for the recognizer: with `Inconel 625` in
+`dictionary_terms`, keyterm boost yields the term before cleanup even runs.
 
 ## Production domains
 
@@ -118,28 +197,17 @@ In the desktop app, set the API base to `http://localhost:8787` and sign in.
 | --- | --- |
 | `weldspeak.com` / `www` | Marketing site (Vercel, `weldsuite/weldspeak-marketing`) — no Clerk |
 | `speak.weldsuite.org` | Sign-in + Stripe Checkout / portal entry (same marketing app, auth host) |
-| `api.weldspeak.com` | API + dashboard Worker (`weldspeak-api`) |
+| `weldspeak.weldsuite.org` | API + dashboard Worker (`weldspeak-api`) — desktop default |
+| `api.weldspeak.com` | Same Worker, secondary hostname |
 
-Desktop default API base is `https://api.weldspeak.com`. Production Worker
-`APP_URL` should be `https://api.weldspeak.com` so device-link pages stay on
-the same host as `/api` and `/auth`. Clerk sessions for WeldSpeak live on
+The desktop app's default API base and the Worker's `APP_URL` are both
+`https://weldspeak.weldsuite.org`, so device-link pages stay on the same host
+as `/api` and `/auth`. Clerk sessions for WeldSpeak live on
 `speak.weldsuite.org` (shared WeldSuite Clerk) — not on the marketing apex.
 
-### Cloudflare cutover (free apex for Vercel)
-
-1. In Workers → `weldspeak-api` → Custom Domains / Triggers, **add**
-   `api.weldspeak.com` (Cloudflare will create the DNS record).
-2. Set production secret/var `APP_URL=https://api.weldspeak.com`.
-3. Confirm `https://api.weldspeak.com/health` and `/api/me` work.
-4. **Remove** the Worker custom domain on `weldspeak.com` (and any route that
-   binds the apex to the Worker).
-5. In Cloudflare DNS for the apex, set the records Vercel shows for
-   `weldspeak.com` (typically A `216.150.1.1` / `216.150.16.1` or
-   `76.76.21.21`) and CNAME `www` → `cname.vercel-dns.com` (or the
-   project-specific target). Prefer DNS-only while verifying.
-6. Vercel project domains: apex serves marketing; `www` → `weldspeak.com` (308).
-
-Until step 4–5, leave apex on the Worker so the live API is not interrupted.
+`weldspeak.com` must **not** be listed in `wrangler.toml` routes: it belongs to
+Vercel, and a deploy that claims it as a Worker custom domain takes the
+marketing site down.
 
 ## Testing
 
@@ -186,23 +254,27 @@ and should be treated as unverified:
   and release, which is what push-to-talk needs, but its coverage of held
   modifier keys varies by platform. If Right Option does not report a release
   on macOS, that path needs a native `NSEvent` monitor instead.
-- **The Workers AI streaming call is written against documentation, not a live
-  endpoint.** `@cf/deepgram/nova-3` over WebSocket is recent; the option names
-  in `session-do.ts` are the single most likely thing here to have drifted. Run
-  the `test:stream` checkpoint first.
+- ~~**The Workers AI streaming call is written against documentation, not a live
+  endpoint.**~~ Verified against the live endpoint. It had drifted, in exactly
+  the place predicted: Workers AI validates the options payload as all-strings
+  and rejects a number or boolean with a 400 (`expected a string`), so
+  `sample_rate: 16000` and `channels: 1` failed the handshake. Every scalar is
+  now sent as its string form; `keyterm` stays an array. See `#connectUpstream`
+  in `session-do.ts`.
 - **Permissions flows are untested.** Microphone and Accessibility prompts
   behave differently for an app that has never been granted them, so test on a
   fresh macOS user account, not one where you have already clicked allow.
 
 ## Shipping
 
-Installers are built from **`ci/desktop`**, not from a green main CI run. See
-[Shipped desktop vs `main`](#shipped-desktop-vs-main-read-this-before-ui-work)
-above. The rolling updater endpoint is the `desktop` release’s `latest.json`.
+Installers are produced by `.github/workflows/desktop.yml` on
+`windows-latest` and `macos-latest` for every push to `main` (and for `v*`
+tags, which also get a GitHub Release). Pushes to `main` refresh the rolling
+`desktop` release's `latest.json`, which is what installed apps update from.
 
-Distribution needs an Apple Developer account (notarization) and a Windows
-code-signing certificate. Both have procurement lead time — start them early,
-they are the usual reason a release slips.
+Distribution to other people needs an Apple Developer account (notarization)
+and a Windows code-signing certificate. Both have procurement lead time —
+start them early, they are the usual reason a release slips.
 
 macOS Accessibility permission resets when the app's signature changes, so keep
 the signing identity stable across releases or every update silently breaks

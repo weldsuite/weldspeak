@@ -41,12 +41,13 @@ export const FRAME_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE * CHANNELS; // 640
  * People start speaking fractionally before the key is fully down, so the
  * capture thread keeps a rolling buffer and prepends it to the stream. Without
  * this the first phoneme is clipped, which the model then guesses at — the
- * single cheapest accuracy win in the capture path.
+ * single cheapest accuracy win in the capture path. 500 ms covers a slow
+ * finger without retaining so much silence that the recognizer stalls.
  */
-export const PREROLL_MS = 300;
+export const PREROLL_MS = 500;
 
 /** Frames held in the pre-roll ring buffer. */
-export const PREROLL_FRAMES = PREROLL_MS / FRAME_MS; // 15
+export const PREROLL_FRAMES = PREROLL_MS / FRAME_MS; // 25
 
 /** Convert a byte count of `linear16` audio to its duration in milliseconds. */
 export function bytesToMs(bytes: number): number {

@@ -1,24 +1,69 @@
 //! Global hotkeys, including push-to-talk.
 //!
-//! Two modes, and they need different machinery.
+//! Tauri's global-shortcut plugin is built on `RegisterHotKey` / `CGEvent`,
+//! which do not reliably report a **modifier held on its own** (Right Ctrl,
+//! Right Option). Those are exactly the keys a dictation app should use.
 //!
-//! **Toggle** — press once to start, again to stop — is a plain global
-//! shortcut, and `tauri-plugin-global-shortcut` handles it on both platforms.
+//! Detection is a short poll of the physical key state (`GetAsyncKeyState` /
+//! `CGEventSourceKeyState`). A `WH_KEYBOARD_LL` callback is too easy for
+//! Windows to skip or silently unhook — especially while another app has
+//! focus — and calling into Tauri from that callback is enough work to trip
+//! the system's hook timeout.
 //!
-//! **Push-to-talk** — hold to dictate — needs key *down* and *up* separately,
-//! which that plugin does not expose. So it goes through a platform hook:
-//! `WH_KEYBOARD_LL` on Windows, `NSEvent`'s global monitor on macOS.
-//!
-//! A note on defaults, since this is where dictation apps disappoint people:
-//! holding **Fn** is the gesture everyone asks for, and on macOS it is the one
-//! key a normal event tap does not deliver. Fn arrives as a modifier flag on
-//! `flagsChanged` rather than as a key event, and on recent hardware it is
-//! partly claimed by the system. Rather than promising it and shipping
-//! something flaky, the defaults are Right Option on macOS and Right Ctrl on
-//! Windows — both unused by almost everything, both reliably observable — and
-//! the binding is configurable.
+//! Bindings are KeyboardEvent `code` strings (`ControlRight`, `KeyA`, or
+//! `ControlRight+MetaLeft`) captured in Settings, then polled by native code.
+
+#[path = "hotkey_codes.rs"]
+mod codes;
+
+pub use codes::{label, parse_codes, types_while_held};
+
+#[cfg(target_os = "windows")]
+pub use codes::code_from_windows_vk;
+
+#[cfg(target_os = "macos")]
+pub use codes::code_from_macos_hid;
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tauri::AppHandle;
+
+#[cfg(target_os = "windows")]
+#[path = "hotkey_windows.rs"]
+mod platform;
+
+#[cfg(target_os = "macos")]
+#[path = "hotkey_macos.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod platform {
+    pub fn is_down(_code: u16) -> bool {
+        false
+    }
+    pub fn is_escape_down() -> bool {
+        false
+    }
+}
+
+static APP: OnceLock<AppHandle> = OnceLock::new();
+/// Packed native codes currently watched. Low 16 bits = first key, high 16 bits
+/// = second key (0 when the binding is a single key). 0 means none.
+static CURRENT: AtomicU32 = AtomicU32::new(0);
+/// True while Settings is capturing a new key, so that press is not a dictation.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+/// Set when the user picks a different hold key so a still-held previous key
+/// cannot keep a dictation open.
+static CANCEL_HOLD: AtomicBool = AtomicBool::new(false);
+
+/// How long a press must last before it stops counting as a double-tap candidate.
+///
+/// Dictation itself starts on key-down; this only gates whether a quick release
+/// arms hands-free on the next press (Wispr-style double-tap).
+const SHORT_TAP: Duration = Duration::from_millis(140);
+const DOUBLE_TAP: Duration = Duration::from_millis(420);
 
 /// How the hotkey behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -36,7 +81,7 @@ pub enum Mode {
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
     pub mode: Mode,
-    /// Accelerator string, in the form `tauri-plugin-global-shortcut` parses.
+    /// KeyboardEvent `code`s, e.g. `ControlRight` or `ControlRight+MetaLeft`.
     pub accelerator: String,
 }
 
@@ -65,43 +110,308 @@ pub const fn default_accelerator() -> &'static str {
 }
 
 /// Whether an accelerator can carry push-to-talk on this platform.
-///
-/// Returns a reason rather than a bare bool so the settings UI can explain the
-/// refusal instead of silently rejecting a key the user just pressed.
 pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
-    if accelerator.trim().is_empty() {
+    let accelerator = accelerator.trim();
+    if accelerator.is_empty() {
         return Err("Choose a key to hold.".into());
     }
 
-    // Fn is the one users ask for and the one macOS will not deliver: it
-    // arrives as a modifier flag rather than a key event, and recent hardware
-    // reserves part of its behaviour for the system.
-    if accelerator.eq_ignore_ascii_case("Fn") || accelerator.eq_ignore_ascii_case("Function") {
-        return Err(
-            "macOS does not report the Fn key to applications. Try holding Right Option instead."
-                .into(),
-        );
+    let parts = codes::parts(accelerator);
+    if parts.is_empty() {
+        return Err("Choose a key to hold.".into());
+    }
+    if parts.len() > 2 {
+        return Err("Hold at most two keys together.".into());
     }
 
-    // A hold binding with a printable key would insert characters into whatever
-    // has focus for as long as the user speaks.
-    if is_printable_key(accelerator) {
-        return Err(format!(
-            "Holding {accelerator} would type into whatever you are working in. \
-             Choose a modifier key such as Right Option or Right Ctrl."
-        ));
+    for part in &parts {
+        if part.eq_ignore_ascii_case("Fn") || part.eq_ignore_ascii_case("Function") {
+            return Err(
+                "macOS does not report the Fn key to applications. Try holding Right Option instead."
+                    .into(),
+            );
+        }
+        if part.eq_ignore_ascii_case("Escape") {
+            return Err("Escape cancels a dictation. Pick another key to hold.".into());
+        }
+    }
+
+    if parse_codes(accelerator).is_none() {
+        return Err("That key cannot be watched on this computer. Try another.".into());
     }
 
     Ok(())
 }
 
-/// Whether an accelerator names a single character-producing key.
-fn is_printable_key(accelerator: &str) -> bool {
-    // Combinations are fine; it is a lone printable key that causes trouble.
-    if accelerator.contains('+') {
+/// Bindable keys offered during Settings capture, in display/priority order.
+const CAPTURE_CANDIDATES: &[&str] = &[
+    "ControlRight",
+    "ControlLeft",
+    "AltRight",
+    "AltLeft",
+    "ShiftRight",
+    "ShiftLeft",
+    "MetaRight",
+    "MetaLeft",
+    "F8",
+    "F9",
+    "F7",
+    "F6",
+    "F5",
+    "CapsLock",
+    "Space",
+];
+
+/// How long a chord must stay stable before Settings commits it.
+///
+/// Without this, holding Ctrl then Shift would bind Ctrl alone on the first
+/// poll before the second finger lands.
+const CAPTURE_SETTLE: Duration = Duration::from_millis(180);
+
+/// Currently held bindable keys as an accelerator (`ControlLeft`, or
+/// `ControlLeft+ShiftLeft`). At most two keys — that is the native watcher limit.
+pub fn held_accelerator() -> Option<String> {
+    let mut held: Vec<&str> = Vec::new();
+    for code in CAPTURE_CANDIDATES {
+        if let Some(native) = codes::native_code(code) {
+            if platform::is_down(native) {
+                held.push(*code);
+                if held.len() == 2 {
+                    break;
+                }
+            }
+        }
+    }
+    if held.is_empty() {
+        None
+    } else {
+        Some(held.join("+"))
+    }
+}
+
+/// First currently held bindable key (legacy helper for tests / call sites).
+pub fn first_held_code() -> Option<String> {
+    held_accelerator().and_then(|accel| codes::parts(&accel).into_iter().next().map(str::to_string))
+}
+
+/// Settled accelerator for Hub capture: waits until the held set is stable.
+///
+/// Returns `Some` once the same one- or two-key chord has been held for
+/// [`CAPTURE_SETTLE`], so multi-key binds are first-class in Settings.
+pub fn settled_held_accelerator() -> Option<String> {
+    use std::sync::Mutex;
+    static SETTLE: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
+    let slot = SETTLE.get_or_init(|| Mutex::new(None));
+
+    let current = held_accelerator();
+    let Ok(mut guard) = slot.lock() else {
+        return current;
+    };
+
+    match (guard.as_ref(), current.as_ref()) {
+        (_, None) => {
+            *guard = None;
+            None
+        }
+        (Some((prev, started)), Some(cur)) if prev == cur => {
+            if started.elapsed() >= CAPTURE_SETTLE {
+                Some(cur.clone())
+            } else {
+                None
+            }
+        }
+        (_, Some(cur)) => {
+            *guard = Some((cur.clone(), Instant::now()));
+            None
+        }
+    }
+}
+
+/// Hint shown under the bind button when the key will also type.
+pub fn hold_warning(accelerator: &str) -> Option<String> {
+    if types_while_held(accelerator) {
+        Some(format!(
+            "Holding {} also types into whatever has focus. A modifier or function key is quieter.",
+            label(accelerator)
+        ))
+    } else {
+        None
+    }
+}
+
+/// Start watching the hold key. Safe to call once, at launch.
+pub fn install(app: &AppHandle) {
+    let _ = APP.set(app.clone());
+    std::thread::Builder::new()
+        .name("weldspeak-ptt".into())
+        .spawn(poll_loop)
+        .expect("failed to start push-to-talk");
+}
+
+/// Point the watcher at the key currently chosen in Settings.
+pub fn listen_for(accelerator: &str) {
+    let packed = parse_codes(accelerator)
+        .map(|(first, second)| pack(first, second))
+        .unwrap_or(0);
+    CURRENT.store(packed, Ordering::SeqCst);
+    CANCEL_HOLD.store(true, Ordering::SeqCst);
+}
+
+fn pack(first: u16, second: u16) -> u32 {
+    // Encode codes as `n + 1` so a stored `0` still means "no binding".
+    // macOS HID usage for KeyA is 0; without the offset a KeyA hold would look
+    // unbound and `binding_down` would never fire.
+    let first = u32::from(first).saturating_add(1);
+    let second = if second == 0 {
+        0
+    } else {
+        u32::from(second).saturating_add(1)
+    };
+    first | (second << 16)
+}
+
+fn binding_down(packed: u32) -> bool {
+    if packed == 0 {
         return false;
     }
-    accelerator.chars().count() == 1 && accelerator.chars().all(|c| c.is_alphanumeric())
+    let first = (packed as u16).wrapping_sub(1);
+    let second_bits = (packed >> 16) as u16;
+    if !platform::is_down(first) {
+        return false;
+    }
+    second_bits == 0 || platform::is_down(second_bits.wrapping_sub(1))
+}
+
+/// Ignore the hold key while Settings is capturing a replacement.
+pub fn suspend(paused: bool) {
+    SUSPENDED.store(paused, Ordering::SeqCst);
+    if paused {
+        CANCEL_HOLD.store(true, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    Ptt,
+    HandsFree,
+}
+
+fn poll_loop() {
+    tracing::info!("push-to-talk key watcher started");
+    let mut phase = Phase::Idle;
+    let mut pressed_at: Option<Instant> = None;
+    let mut last_short_release: Option<Instant> = None;
+    let mut escape_held = false;
+    let mut hf_stop_armed = false;
+    // After Settings captures a key, the person is still holding it when the
+    // new binding goes live. Ignore the binding until it has been let go, or
+    // that same press would start a dictation the moment capture ends.
+    let mut await_release = false;
+
+    loop {
+        let cancel = CANCEL_HOLD.swap(false, Ordering::SeqCst);
+        let suspended = SUSPENDED.load(Ordering::Relaxed);
+        let packed = CURRENT.load(Ordering::Relaxed);
+        let physically_down = binding_down(packed);
+        if cancel || suspended {
+            await_release = true;
+        } else if await_release && !physically_down {
+            await_release = false;
+        }
+        let key_down = !await_release && physically_down;
+        let escape = !suspended && platform::is_escape_down();
+        let now = Instant::now();
+
+        if cancel && phase != Phase::Idle {
+            if matches!(phase, Phase::Ptt | Phase::HandsFree) {
+                dispatch_end(true);
+            }
+            phase = Phase::Idle;
+            pressed_at = None;
+            hf_stop_armed = false;
+        }
+
+        if escape && !escape_held && phase != Phase::Idle {
+            if matches!(phase, Phase::Ptt | Phase::HandsFree) {
+                dispatch_end(true);
+            }
+            phase = Phase::Idle;
+            pressed_at = None;
+            hf_stop_armed = false;
+            last_short_release = None;
+        }
+        escape_held = escape;
+
+        match phase {
+            Phase::Idle => {
+                if key_down {
+                    // Start on press so a quick tap still records. Waiting for a
+                    // hold threshold was dropping utterances Wispr Flow would keep.
+                    let is_double =
+                        last_short_release.is_some_and(|t| now.duration_since(t) < DOUBLE_TAP);
+                    if is_double {
+                        phase = Phase::HandsFree;
+                        last_short_release = None;
+                        hf_stop_armed = false;
+                    } else {
+                        phase = Phase::Ptt;
+                        pressed_at = Some(now);
+                    }
+                    dispatch_begin();
+                }
+            }
+            Phase::Ptt => {
+                if !key_down {
+                    // A brief press can be the first half of a double-tap for
+                    // hands-free; a real hold clears that candidate.
+                    if pressed_at.is_some_and(|t| now.duration_since(t) < SHORT_TAP) {
+                        last_short_release = Some(now);
+                    } else {
+                        last_short_release = None;
+                    }
+                    pressed_at = None;
+                    phase = Phase::Idle;
+                    dispatch_end(false);
+                }
+            }
+            Phase::HandsFree => {
+                if key_down {
+                    hf_stop_armed = true;
+                } else if hf_stop_armed {
+                    hf_stop_armed = false;
+                    phase = Phase::Idle;
+                    dispatch_end(false);
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn dispatch_begin() {
+    dispatch(crate::dictation::begin);
+}
+
+fn dispatch_end(cancel: bool) {
+    dispatch(move |app| {
+        if cancel {
+            crate::dictation::cancel(app);
+        } else {
+            crate::dictation::end(app);
+        }
+    });
+}
+
+fn dispatch(action: impl FnOnce(&AppHandle) + Send + 'static) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    let app = app.clone();
+    if let Err(error) = app.clone().run_on_main_thread(move || action(&app)) {
+        tracing::warn!(%error, "could not dispatch push-to-talk");
+    }
 }
 
 #[cfg(test)]
@@ -119,27 +429,57 @@ mod tests {
     #[test]
     fn explains_why_fn_cannot_be_used() {
         let error = validate_for_push_to_talk("Fn").unwrap_err();
-
-        // The message has to name an alternative: "unsupported" alone leaves
-        // the user guessing at what will work.
         assert!(error.contains("Right Option"));
     }
 
     #[test]
-    fn rejects_a_lone_printable_key() {
-        // Holding `a` for a sentence types "aaaaaaaa" into the user's document.
-        let error = validate_for_push_to_talk("a").unwrap_err();
-        assert!(error.contains("type into"));
+    fn rejects_escape_because_it_cancels() {
+        let error = validate_for_push_to_talk("Escape").unwrap_err();
+        assert!(error.to_lowercase().contains("cancel"));
     }
 
     #[test]
-    fn accepts_modifiers_and_combinations() {
-        for accelerator in ["AltRight", "ControlRight", "CommandOrControl+Space", "F13"] {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    fn accepts_letters_and_function_keys() {
+        for accelerator in [
+            "AltRight",
+            "ControlRight",
+            "F8",
+            "F13",
+            "KeyA",
+            "Space",
+            "F5",
+            "ControlRight+MetaLeft",
+        ] {
             assert!(
                 validate_for_push_to_talk(accelerator).is_ok(),
                 "{accelerator} should be allowed"
             );
         }
+    }
+
+    #[test]
+    fn warns_that_letters_will_type() {
+        assert!(hold_warning("KeyA").is_some());
+        assert!(hold_warning("ControlRight+KeyA").is_some());
+        assert!(hold_warning("ControlRight").is_none());
+    }
+
+    #[test]
+    fn accepts_two_keys_held_together() {
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            assert!(validate_for_push_to_talk("ControlRight+MetaLeft").is_ok());
+            assert!(validate_for_push_to_talk("ControlLeft+AltLeft").is_ok());
+            assert!(validate_for_push_to_talk("ControlLeft+ShiftLeft").is_ok());
+        }
+        assert!(validate_for_push_to_talk("ControlRight+ControlRight").is_err());
+        assert!(validate_for_push_to_talk("Escape+ControlRight").is_err());
+    }
+
+    #[test]
+    fn rejects_plugin_style_chords() {
+        assert!(validate_for_push_to_talk("CommandOrControl+Space").is_err());
     }
 
     #[test]
@@ -149,10 +489,16 @@ mod tests {
 
     #[test]
     fn round_trips_through_settings_json() {
-        let binding = Binding { mode: Mode::Toggle, accelerator: "F13".into() };
+        let binding = Binding {
+            mode: Mode::Toggle,
+            accelerator: "F13".into(),
+        };
 
         let json = serde_json::to_string(&binding).unwrap();
-        assert!(json.contains("\"toggle\""), "modes are camelCase on the wire: {json}");
+        assert!(
+            json.contains("\"toggle\""),
+            "modes are camelCase on the wire: {json}"
+        );
 
         assert_eq!(serde_json::from_str::<Binding>(&json).unwrap(), binding);
     }

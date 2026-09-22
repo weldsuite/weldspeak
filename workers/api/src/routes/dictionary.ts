@@ -8,7 +8,7 @@
  */
 
 import { Hono } from "hono";
-import type { CreateTermRequest, DictionaryTerm } from "@weldspeak/protocol";
+import type { CreateTermRequest, DictionaryTerm, LearnCorrectionRequest } from "@weldspeak/protocol";
 import type { AppBindings } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
 
@@ -126,6 +126,66 @@ dictionaryRoutes.post("/", async (c) => {
       id,
       scope,
       term,
+      soundsLike,
+      createdAt: new Date().toISOString(),
+    } satisfies DictionaryTerm,
+    201,
+  );
+});
+
+dictionaryRoutes.post("/learn", async (c) => {
+  const { userId } = c.get("auth");
+  const body = await c.req.json<LearnCorrectionRequest>().catch(() => null);
+  const meant = body?.meant?.trim();
+  if (!meant) {
+    return c.json({ error: "bad_request", message: "meant is required" }, 400);
+  }
+  if (meant.length > 128) {
+    return c.json({ error: "bad_request", message: "term must be 128 characters or fewer" }, 400);
+  }
+
+  const heard = body?.heard?.trim() || null;
+  if (heard && heard.length > 128) {
+    return c.json({ error: "bad_request", message: "heard must be 128 characters or fewer" }, 400);
+  }
+  const soundsLike =
+    heard && heard.toLocaleLowerCase() !== meant.toLocaleLowerCase() ? heard : null;
+
+  const existing = await c.env.DB.prepare(
+    `SELECT id, sounds_like, created_at
+       FROM dictionary_terms
+      WHERE scope = 'user' AND clerk_user_id = ? AND term = ? COLLATE NOCASE`,
+  )
+    .bind(userId, meant)
+    .first<{ id: string; sounds_like: string | null; created_at: string }>();
+
+  if (existing) {
+    const nextSounds = soundsLike ?? existing.sounds_like;
+    await c.env.DB.prepare(`UPDATE dictionary_terms SET sounds_like = ? WHERE id = ?`)
+      .bind(nextSounds, existing.id)
+      .run();
+    return c.json({
+      id: existing.id,
+      scope: "user",
+      term: meant,
+      soundsLike: nextSounds,
+      createdAt: existing.created_at,
+    } satisfies DictionaryTerm);
+  }
+
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO dictionary_terms (id, scope, clerk_user_id, clerk_org_id, term, sounds_like)
+     VALUES (?, 'user', ?, NULL, ?, ?)`,
+  )
+    .bind(id, userId, meant, soundsLike)
+    .run();
+
+  return c.json(
+    {
+      id,
+      scope: "user",
+      term: meant,
       soundsLike,
       createdAt: new Date().toISOString(),
     } satisfies DictionaryTerm,

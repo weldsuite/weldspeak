@@ -12,8 +12,8 @@
     "db:migrate:local": "wrangler d1 migrations apply weldspeak --local",
     "db:migrate": "wrangler d1 migrations apply weldspeak --remote",
     "test:stream": "node --experimental-strip-types scripts/stream-wav.ts",
-    "pretest": "mkdir -p ../../apps/web/dist",
-    "predev": "mkdir -p ../../apps/web/dist"
+    "pretest": "node -e \"require('fs').mkdirSync('../../apps/web/dist',{recursive:true})\"",
+    "predev": "node -e \"require('fs').mkdirSync('../../apps/web/dist',{recursive:true})\""
   },
   "dependencies": {
     "@clerk/backend": "^2.0.0",

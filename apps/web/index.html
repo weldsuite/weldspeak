@@ -3,7 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WeldSpeak</title>
+    <title>WeldSpeak — Hold a key, speak, let go</title>
+    <meta
+      name="description"
+      content="Push-to-talk dictation for shops. Hold a key, speak, and cleaned-up text appears wherever you were typing. Streaming speech-to-text, team glossary, Windows and macOS."
+    />
+    <meta property="og:title" content="WeldSpeak — Hold a key, speak, let go" />
+    <meta
+      property="og:description"
+      content="Dictation that types into Slack, email, and your IDE. Built for alloy names, part numbers, and the words generic speech models mangle."
+    />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("weldspeak-theme");
+          var theme;
+          if (stored === "dark" || stored === "light") {
+            theme = stored;
+          } else if (stored === "system") {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          } else {
+            theme = "light";
+          }
+          document.documentElement.classList.add(theme);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

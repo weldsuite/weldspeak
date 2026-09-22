@@ -92,11 +92,11 @@ impl Session {
         &self.state
     }
 
-    /// Whether audio frames should currently be sent.
+    /// Whether audio frames should currently be sent on the wire.
     ///
-    /// True only while recording: frames captured during `Arming` are held by
-    /// the framer, and anything after `stop` would arrive past the end of the
-    /// utterance.
+    /// True only while recording. During `Arming` the framer *holds* frames
+    /// locally until `ready`; anything after `stop` would arrive past the end
+    /// of the utterance.
     pub fn is_streaming(&self) -> bool {
         matches!(self.state, State::Recording)
     }
@@ -120,8 +120,8 @@ impl Session {
             (State::Arming { stop_pending }, Event::Ready) => {
                 if *stop_pending {
                     // The user tapped and released faster than the socket came
-                    // up. The pre-roll holds what they said, so finalize at once
-                    // rather than dropping the utterance.
+                    // up. Audio since hotkey-down is held by the framer, so
+                    // finalize at once rather than dropping the utterance.
                     self.state = State::Finalizing;
                     vec![Action::StartStreaming, Action::SendStop]
                 } else {
@@ -227,8 +227,8 @@ mod tests {
 
     #[test]
     fn a_quick_tap_still_produces_a_dictation() {
-        // Released before the socket came up. The pre-roll holds what was said,
-        // so this must finalize rather than silently drop the utterance.
+        // Released before the socket came up. The framer holds audio since
+        // hotkey-down, so this must finalize rather than silently drop.
         let mut session = Session::new();
 
         session.handle(Event::HotkeyDown);

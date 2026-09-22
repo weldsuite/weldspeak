@@ -13,10 +13,60 @@
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream, StreamConfig};
+use serde::Serialize;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use weldspeak_core::{Frame, Framer, Resampler};
 use weldspeak_protocol::audio::SAMPLE_RATE;
+
+/// An input device the settings window can offer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Microphone {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// Input devices currently attached. An empty list means the host would not
+/// enumerate them; the UI still offers "System default".
+pub fn list_input_devices() -> Vec<Microphone> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+
+    let mut listed: Vec<Microphone> = devices
+        .filter_map(|device| {
+            let name = device.name().ok()?;
+            let is_default = default_name.as_deref() == Some(name.as_str());
+            Some(Microphone { name, is_default })
+        })
+        .collect();
+    listed.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
+    listed
+}
+
+/// Resolve a saved device name, falling back to the system default if it is
+/// missing, empty, or the headset has been unplugged.
+fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    if let Some(name) = preferred.filter(|name| !name.is_empty()) {
+        if let Ok(devices) = host.input_devices() {
+            for device in devices {
+                if device.name().ok().as_deref() == Some(name) {
+                    return Ok(device);
+                }
+            }
+        }
+        tracing::warn!(name, "saved microphone not found; using system default");
+    }
+    host.default_input_device()
+        .ok_or_else(|| anyhow!("no microphone available"))
+}
 
 /// A running capture, conditioning device audio into wire-ready frames.
 ///
@@ -28,7 +78,20 @@ use weldspeak_protocol::audio::SAMPLE_RATE;
 /// thread, which drops the stream.
 pub struct Capture {
     shared: Arc<Mutex<Pipeline>>,
-    _shutdown: Sender<()>,
+    level: Arc<AtomicU32>,
+    shutdown: Option<Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        // Close the stream before another Capture::start opens the same (or
+        // another) device — WASAPI will refuse a second exclusive open.
+        drop(self.shutdown.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 struct Pipeline {
@@ -37,22 +100,26 @@ struct Pipeline {
 }
 
 impl Capture {
-    /// Open the default input device and begin conditioning audio.
+    /// Open an input device and begin conditioning audio.
     ///
-    /// Frames are sent to `frames` only while armed; before that they feed the
-    /// pre-roll buffer and are discarded as they age out.
-    pub fn start(frames: Sender<Frame>) -> Result<Self> {
+    /// `preferred` is a cpal device name from settings; `None` or a name that
+    /// is no longer attached uses the system default. Frames are sent to
+    /// `frames` only while armed; before that they feed the pre-roll buffer
+    /// and are discarded as they age out.
+    pub fn start(frames: Sender<Frame>, preferred: Option<String>) -> Result<Self> {
         let (shutdown, shutdown_rx) = channel::<()>();
         // The audio thread reports whether the device opened, so a missing or
         // refused microphone surfaces here rather than as silence later.
-        let (ready, ready_rx) = channel::<Result<Arc<Mutex<Pipeline>>>>();
+        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, Arc<AtomicU32>)>>();
+        let level = Arc::new(AtomicU32::new(0));
+        let level_for_thread = Arc::clone(&level);
 
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("weldspeak-audio".into())
             .spawn(move || {
-                let stream = match Self::open(frames) {
-                    Ok((stream, shared)) => {
-                        let _ = ready.send(Ok(shared));
+                let stream = match Self::open(frames, level_for_thread, preferred.as_deref()) {
+                    Ok((stream, shared, level)) => {
+                        let _ = ready.send(Ok((shared, level)));
                         stream
                     }
                     Err(error) => {
@@ -67,18 +134,54 @@ impl Capture {
                 drop(stream);
             })?;
 
-        let shared = ready_rx.recv()??;
-        Ok(Self { shared, _shutdown: shutdown })
+        match ready_rx.recv()? {
+            Ok((shared, _thread_level)) => Ok(Self {
+                shared,
+                level,
+                shutdown: Some(shutdown),
+                thread: Some(thread),
+            }),
+            Err(error) => {
+                let _ = thread.join();
+                Err(error)
+            }
+        }
     }
 
-    /// Open the default input device. Runs on the audio thread.
-    fn open(frames: Sender<Frame>) -> Result<(Stream, Arc<Mutex<Pipeline>>)> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("no microphone available"))?;
+    /// Instantaneous microphone loudness, 0.0–1.0, for the listening waveform.
+    pub fn current_level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
 
-        let supported = device.default_input_config()?;
+    /// Open the chosen input device. Runs on the audio thread.
+    fn open(
+        frames: Sender<Frame>,
+        level: Arc<AtomicU32>,
+        preferred: Option<&str>,
+    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU32>)> {
+        let device = pick_input_device(preferred)?;
+
+        let mut supported = device.default_input_config()?;
+        // Prefer 48 kHz (or 44.1) when the device offers it — more headroom for
+        // the anti-aliasing resampler than a low native rate.
+        if let Ok(configs) = device.supported_input_configs() {
+            let preferred = configs
+                .filter(|range| range.channels() >= 1)
+                .filter_map(|range| {
+                    let max = range.max_sample_rate().0;
+                    let min = range.min_sample_rate().0;
+                    let rate = [48_000, 44_100, 32_000, 16_000]
+                        .into_iter()
+                        .find(|r| *r >= min && *r <= max)?;
+                    Some(range.with_sample_rate(cpal::SampleRate(rate)))
+                })
+                .max_by_key(|cfg| cfg.sample_rate().0);
+            if let Some(better) = preferred {
+                if better.sample_rate().0 > supported.sample_rate().0 {
+                    supported = better;
+                }
+            }
+        }
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
 
@@ -90,18 +193,28 @@ impl Capture {
         );
 
         let shared = Arc::new(Mutex::new(Pipeline {
-            resampler: Resampler::new(
-                config.sample_rate.0,
-                config.channels as usize,
-                SAMPLE_RATE,
-            ),
+            resampler: Resampler::new(config.sample_rate.0, config.channels as usize, SAMPLE_RATE),
             framer: Framer::new(),
         }));
 
-        let stream = Self::build_stream(&device, &config, sample_format, shared.clone(), frames)?;
+        let stream = Self::build_stream(
+            &device,
+            &config,
+            sample_format,
+            shared.clone(),
+            Arc::clone(&level),
+            frames,
+        )?;
         stream.play()?;
 
-        Ok((stream, shared))
+        Ok((stream, shared, level))
+    }
+
+    /// Begin retaining frames until [`Self::arm`] (hotkey-down).
+    pub fn hold(&self) {
+        if let Ok(mut pipeline) = self.shared.lock() {
+            pipeline.framer.hold();
+        }
     }
 
     /// Begin sending frames, returning the retained pre-roll to send first.
@@ -124,6 +237,7 @@ impl Capture {
         config: &StreamConfig,
         format: SampleFormat,
         shared: Arc<Mutex<Pipeline>>,
+        level: Arc<AtomicU32>,
         frames: Sender<Frame>,
     ) -> Result<Stream> {
         // An error on the audio thread must not take the process down: the user
@@ -133,7 +247,10 @@ impl Capture {
         let stream = match format {
             SampleFormat::F32 => device.build_input_stream(
                 config,
-                move |data: &[f32], _| process(&shared, &frames, data),
+                {
+                    let level = Arc::clone(&level);
+                    move |data: &[f32], _| process(&shared, &level, &frames, data)
+                },
                 on_error,
                 None,
             )?,
@@ -143,7 +260,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[i16], _| process(&shared, &frames, &convert(data)),
+                    move |data: &[i16], _| process(&shared, &level, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -154,7 +271,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[u16], _| process(&shared, &frames, &convert(data)),
+                    move |data: &[u16], _| process(&shared, &level, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -171,18 +288,113 @@ impl Capture {
 /// This thread has a hard deadline — overrunning it produces an audible glitch
 /// — so it does no I/O and never blocks. The channel send is non-blocking and a
 /// full channel drops the frame rather than stalling capture.
-fn process(shared: &Arc<Mutex<Pipeline>>, frames: &Sender<Frame>, samples: &[f32]) {
+fn process(
+    shared: &Arc<Mutex<Pipeline>>,
+    level: &Arc<AtomicU32>,
+    frames: &Sender<Frame>,
+    samples: &[f32],
+) {
+    // Peak with instant attack and a short release so the overlay can track
+    // speech. Raw RMS of conversational mic input is ~0.02 and would look like
+    // silence if drawn linearly.
+    let peak = samples
+        .iter()
+        .fold(0.0f32, |max, sample| max.max(sample.abs()));
+    let rms = rms_f32(samples);
+    let instant = peak.max(rms * 1.8);
+    let previous = f32::from_bits(level.load(Ordering::Relaxed));
+    let next = if instant > previous {
+        instant
+    } else {
+        previous * 0.86 + instant * 0.14
+    };
+    level.store(next.to_bits(), Ordering::Relaxed);
+
     let Ok(mut pipeline) = shared.try_lock() else {
         // The lock is only held briefly by arm/disarm. Skipping a callback is
         // better than blocking the audio thread waiting for it.
         return;
     };
 
-    let resampled = pipeline.resampler.push(samples);
+    // Quiet laptop mics often sit well below the level Nova-3 was trained on.
+    // Soft make-up gain lifts speech toward a healthy peak without touching
+    // already-loud input (and without inventing a noise gate).
+    let boosted = apply_makeup_gain(samples, peak);
+    let resampled = pipeline.resampler.push(&boosted);
     for frame in pipeline.framer.push(&resampled) {
         if frames.send(frame).is_err() {
             // The receiver is gone; the session has ended.
             return;
         }
+    }
+}
+
+/// Root-mean-square loudness of a buffer, clamped to 0..=1.
+fn rms_f32(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f32 = samples.iter().map(|sample| sample * sample).sum();
+    (sum / samples.len() as f32).sqrt().min(1.0)
+}
+
+/// Soft make-up gain for quiet microphones.
+///
+/// Target peak ~0.35 when the buffer is clearly speech-like but quiet. Silence
+/// and already-loud buffers are left alone so noise floor and clipping stay put.
+fn apply_makeup_gain(samples: &[f32], peak: f32) -> Vec<f32> {
+    const FLOOR: f32 = 0.012;
+    const TARGET: f32 = 0.35;
+    const MAX_GAIN: f32 = 4.0;
+
+    if peak < FLOOR || peak >= TARGET {
+        return samples.to_vec();
+    }
+    let gain = (TARGET / peak).min(MAX_GAIN);
+    samples
+        .iter()
+        .map(|sample| (sample * gain).clamp(-1.0, 1.0))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_makeup_gain, rms_f32};
+
+    #[test]
+    fn silence_is_zero() {
+        assert_eq!(rms_f32(&[0.0, 0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn a_full_scale_tone_is_loud() {
+        assert!(rms_f32(&[1.0, -1.0, 1.0, -1.0]) > 0.9);
+    }
+
+    #[test]
+    fn quiet_speech_is_boosted() {
+        let quiet: Vec<f32> = (0..64).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }).collect();
+        let peak = 0.05;
+        let boosted = apply_makeup_gain(&quiet, peak);
+        let out_peak = boosted.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        // Cap is 4×, so 0.05 → 0.20; still clearly louder than the input.
+        assert!(
+            out_peak >= 0.19,
+            "expected make-up gain, got peak {out_peak}"
+        );
+    }
+
+    #[test]
+    fn loud_speech_is_unchanged() {
+        let loud = vec![0.5f32, -0.5, 0.4, -0.4];
+        let boosted = apply_makeup_gain(&loud, 0.5);
+        assert_eq!(boosted, loud);
+    }
+
+    #[test]
+    fn near_silence_is_not_amplified() {
+        let hush = vec![0.001f32, -0.001, 0.002, -0.002];
+        let boosted = apply_makeup_gain(&hush, 0.002);
+        assert_eq!(boosted, hush);
     }
 }

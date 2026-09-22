@@ -108,3 +108,55 @@ pub fn send_paste_shortcut() -> Result<()> {
         virtual_key_input(VK_CONTROL, true),
     ])
 }
+
+/// Text in the focused control, if this is a native field we can read.
+pub fn focused_text() -> Option<String> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageW,
+        GUITHREADINFO, WM_GETTEXT, WM_GETTEXTLENGTH,
+    };
+
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.is_invalid() {
+            return None;
+        }
+        let thread = GetWindowThreadProcessId(foreground, None);
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(thread, &mut info).is_err() {
+            return None;
+        }
+        let hwnd = if info.hwndFocus.is_invalid() {
+            foreground
+        } else {
+            info.hwndFocus
+        };
+        let length = SendMessageW(hwnd, WM_GETTEXTLENGTH, WPARAM(0), LPARAM(0)).0;
+        if length <= 0 || length > 8_000 {
+            return None;
+        }
+        let mut buffer = vec![0u16; length as usize + 1];
+        let copied = SendMessageW(
+            hwnd,
+            WM_GETTEXT,
+            WPARAM(buffer.len()),
+            LPARAM(buffer.as_mut_ptr() as isize),
+        )
+        .0;
+        if copied <= 0 {
+            return None;
+        }
+        buffer.truncate(copied as usize);
+        let text = String::from_utf16(&buffer).ok()?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+}

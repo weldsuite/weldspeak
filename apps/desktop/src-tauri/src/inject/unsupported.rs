@@ -21,3 +21,7 @@ pub fn type_text(_text: &str) -> Result<()> {
 pub fn send_paste_shortcut() -> Result<()> {
     bail!("text injection is not implemented on this platform")
 }
+
+pub fn focused_text() -> Option<String> {
+    None
+}
