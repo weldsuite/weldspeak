@@ -91,9 +91,11 @@ pub fn from_field_change(inserted: &str, before: &str, after: &str) -> Vec<Corre
 
     // A field can contain the same sentence twice; the right copy is the one
     // the edit landed in.
-    let Some(start) = before.match_indices(inserted).map(|(at, _)| at).find(|&at| {
-        at <= changed_from && changed_to <= at + inserted.len()
-    }) else {
+    let Some(start) = before
+        .match_indices(inserted)
+        .map(|(at, _)| at)
+        .find(|&at| at <= changed_from && changed_to <= at + inserted.len())
+    else {
         return Vec::new();
     };
     let end = start + inserted.len();
@@ -281,11 +283,8 @@ pub fn from_keystrokes(
     let heard: String = chars[word_start..].iter().collect();
     let kept: String = chars[word_start..delete_at].iter().collect();
     let meant = format!("{kept}{typed}");
-    Correction::new(
-        trim_edge_punctuation(&heard),
-        trim_edge_punctuation(&meant),
-    )
-    .filter(is_learnable)
+    Correction::new(trim_edge_punctuation(&heard), trim_edge_punctuation(&meant))
+        .filter(is_learnable)
 }
 
 /// Names and jargon from a finished dictation that belong in the glossary.
@@ -645,21 +644,34 @@ mod tests {
     #[test]
     fn a_change_of_mind_is_not_learned() {
         // Remembering this would swap every future "John" for "Sarah".
-        assert!(from_field_change("send it to John", "send it to John", "send it to Sarah").is_empty());
+        assert!(
+            from_field_change("send it to John", "send it to John", "send it to Sarah").is_empty()
+        );
         assert!(!is_learnable(&correction("Tuesday", "Friday")));
     }
 
     #[test]
     fn grammar_fixes_are_not_learned() {
-        for (heard, meant) in [("their", "there"), ("its", "it's"), ("to", "too"), ("your", "you're")] {
-            assert!(!is_learnable(&correction(heard, meant)), "{heard} → {meant}");
+        for (heard, meant) in [
+            ("their", "there"),
+            ("its", "it's"),
+            ("to", "too"),
+            ("your", "you're"),
+        ] {
+            assert!(
+                !is_learnable(&correction(heard, meant)),
+                "{heard} → {meant}"
+            );
         }
     }
 
     #[test]
     fn short_word_swaps_in_other_languages_are_not_learned() {
         for (heard, meant) in [("dat", "dit"), ("der", "die"), ("le", "la")] {
-            assert!(!is_learnable(&correction(heard, meant)), "{heard} → {meant}");
+            assert!(
+                !is_learnable(&correction(heard, meant)),
+                "{heard} → {meant}"
+            );
         }
         // A short term with a capital is a name worth keeping.
         assert!(is_learnable(&correction("aws", "AWS")));
@@ -697,7 +709,11 @@ mod tests {
 
     #[test]
     fn punctuation_around_a_fixed_word_is_not_part_of_the_term() {
-        let learned = from_field_change("check the inconel.", "check the inconel.", "check the Inconel 625.");
+        let learned = from_field_change(
+            "check the inconel.",
+            "check the inconel.",
+            "check the Inconel 625.",
+        );
         assert_eq!(learned, vec![correction("inconel", "Inconel 625")]);
     }
 

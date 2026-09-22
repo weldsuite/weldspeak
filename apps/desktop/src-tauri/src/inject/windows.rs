@@ -186,7 +186,11 @@ fn focused_text_automation() -> Option<String> {
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
             let element = automation.GetFocusedElement().ok()?;
             // Never read a password field into memory, let alone learn from it.
-            if element.CurrentIsPassword().map(|b| b.as_bool()).unwrap_or(true) {
+            if element
+                .CurrentIsPassword()
+                .map(|b| b.as_bool())
+                .unwrap_or(true)
+            {
                 return None;
             }
 
@@ -204,7 +208,11 @@ fn focused_text_automation() -> Option<String> {
             let pattern = element
                 .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
                 .ok()?;
-            let text = pattern.DocumentRange().ok()?.GetText(MAX_FIELD_CHARS).ok()?;
+            let text = pattern
+                .DocumentRange()
+                .ok()?
+                .GetText(MAX_FIELD_CHARS)
+                .ok()?;
             Some(text.to_string())
         })();
 
