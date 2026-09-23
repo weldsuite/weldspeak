@@ -33,24 +33,25 @@ describe("glossaryKeyterms", () => {
 });
 
 describe("recognitionLanguage", () => {
-  it("uses multilingual recognition when no language is chosen", () => {
-    // Nova-3 assumes English without a language, so "Detect automatically"
-    // used to transcribe Dutch speech as English.
-    expect(recognitionLanguage(undefined)).toBe("multi");
-    expect(recognitionLanguage(null)).toBe("multi");
-    expect(recognitionLanguage("  ")).toBe("multi");
+  it("uses English when no language is chosen", () => {
+    // Multilingual as the default mangled English dictation word by word.
+    expect(recognitionLanguage(undefined)).toBe("en");
+    expect(recognitionLanguage(null)).toBe("en");
+    expect(recognitionLanguage("  ")).toBe("en");
   });
 
-  it("keeps a language the user picked", () => {
+  it("keeps a language the user picked, multilingual included", () => {
     expect(recognitionLanguage("nl")).toBe("nl");
     expect(recognitionLanguage("en")).toBe("en");
+    expect(recognitionLanguage("multi")).toBe("multi");
   });
 });
 
 describe("recognitionOptions", () => {
   const keyterms = ["WeldSuite", "WeldDesk"];
 
-  it("boosts keyterms for English", () => {
+  it("boosts keyterms for English, the default", () => {
+    expect(recognitionOptions(null, keyterms)).toMatchObject({ language: "en", keyterm: keyterms });
     expect(recognitionOptions("en", keyterms)).toMatchObject({ language: "en", keyterm: keyterms });
     expect(recognitionOptions("en-US", keyterms)).toMatchObject({ keyterm: keyterms });
   });
@@ -59,10 +60,9 @@ describe("recognitionOptions", () => {
     // Nova-3 on Workers AI closes the stream straight away when keyterms come
     // with a non-English language, so every dictation failed with the
     // speech model dropping.
-    for (const locale of [null, "nl", "de"]) {
+    for (const locale of ["multi", "nl", "de"]) {
       expect(recognitionOptions(locale, keyterms)).not.toHaveProperty("keyterm");
     }
-    expect(recognitionOptions(null, keyterms).language).toBe("multi");
   });
 
   it("sends every scalar option as a string", () => {

@@ -72,8 +72,10 @@ interface UpdateInfo {
 type UpdatePhase = "checking" | "ready" | "installing" | "latest" | "error";
 
 const LOCALES: Array<[string, string]> = [
-  ["", "Detect automatically (multilingual)"],
-  ["en", "English"],
+  // No choice means English on the server. A saved "en" from before shows as
+  // this entry too, since no other option matches it.
+  ["", "English"],
+  ["multi", "Mixed languages (less accurate)"],
   ["nl", "Dutch"],
   ["de", "German"],
   ["fr", "French"],
