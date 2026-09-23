@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DictionaryTerm } from "@weldspeak/protocol";
-import { glossaryKeyterms, recognitionLanguage } from "../src/session-do.js";
+import { glossaryKeyterms, recognitionLanguage, recognitionOptions } from "../src/session-do.js";
 
 const term = (
   name: string,
@@ -44,5 +44,31 @@ describe("recognitionLanguage", () => {
   it("keeps a language the user picked", () => {
     expect(recognitionLanguage("nl")).toBe("nl");
     expect(recognitionLanguage("en")).toBe("en");
+  });
+});
+
+describe("recognitionOptions", () => {
+  const keyterms = ["WeldSuite", "WeldDesk"];
+
+  it("boosts keyterms for English", () => {
+    expect(recognitionOptions("en", keyterms)).toMatchObject({ language: "en", keyterm: keyterms });
+    expect(recognitionOptions("en-US", keyterms)).toMatchObject({ keyterm: keyterms });
+  });
+
+  it("never sends keyterms with other languages", () => {
+    // Nova-3 on Workers AI closes the stream straight away when keyterms come
+    // with a non-English language, so every dictation failed with the
+    // speech model dropping.
+    for (const locale of [null, "nl", "de"]) {
+      expect(recognitionOptions(locale, keyterms)).not.toHaveProperty("keyterm");
+    }
+    expect(recognitionOptions(null, keyterms).language).toBe("multi");
+  });
+
+  it("sends every scalar option as a string", () => {
+    const options = recognitionOptions("en", keyterms);
+    for (const [key, value] of Object.entries(options)) {
+      if (key !== "keyterm") expect(typeof value).toBe("string");
+    }
   });
 });

@@ -67,12 +67,51 @@ export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
  * detection, so "Detect automatically" used to mean "English only". `multi`
  * is Nova-3's code-switching mode: it recognises English, Dutch, German,
  * French, Spanish, Portuguese, Italian, Russian, Hindi, and Japanese, even
- * mixed within one sentence, and still honours keyterms. Other languages
- * need to be chosen explicitly.
+ * mixed within one sentence. Other languages need to be chosen explicitly.
  */
 export function recognitionLanguage(locale: string | null | undefined): string {
   const chosen = locale?.trim();
   return chosen ? chosen : "multi";
+}
+
+/**
+ * Recognition options for the Nova-3 streaming call.
+ *
+ * Every value is a string. Workers AI validates this payload as all-strings
+ * and rejects a number or boolean with a 400 ("expected a string"), so
+ * `sample_rate: 16000` fails where `"16000"` succeeds. Only `keyterm` stays
+ * structured, as an array of strings.
+ *
+ * Keyterms go out only for English. Nova-3 on Workers AI accepts `keyterm`
+ * with any other language, `multi` included, then closes the stream at once
+ * without transcribing anything: the client sees the speech model drop on
+ * every dictation. The glossary still reaches the cleanup pass, which fixes
+ * spellings for those languages.
+ */
+export function recognitionOptions(
+  locale: string | null | undefined,
+  keyterms: string[],
+): Record<string, string | string[]> {
+  const language = recognitionLanguage(locale);
+  const english = language.startsWith("en");
+  return {
+    encoding: "linear16",
+    sample_rate: String(SAMPLE_RATE),
+    channels: "1",
+    interim_results: "true",
+    punctuate: "true",
+    smart_format: "true",
+    // Spoken "period" / "comma" → punctuation, and "twenty five" → "25".
+    // Both are English-only in Deepgram; for other languages the cleanup
+    // pass converts dictated punctuation instead.
+    ...(english ? { dictation: "true", numerals: "true" } : {}),
+    // Keep fillers out of the raw transcript; cleanup still strips hedges.
+    filler_words: "false",
+    // Client issues CloseStream on hotkey-up; do not auto-finalize on pause.
+    endpointing: "false",
+    language,
+    ...(english && keyterms.length > 0 ? { keyterm: keyterms } : {}),
+  };
 }
 
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
@@ -245,41 +284,16 @@ export class DictationSession extends DurableObject<Env> {
    * Open the streaming connection to the speech model.
    *
    * Workers AI returns a WebSocket for streaming models when called with
-   * `{ websocket: true }`; recognition options travel in the same call.
-   *
-   * Every option value is sent as a string. Workers AI validates this payload
-   * as all-strings and rejects a number or boolean with a 400 ("expected a
-   * string"), so `sample_rate: 16000` fails where `"16000"` succeeds. Only
-   * `keyterm` stays structured, as an array of strings.
-   *
-   * Options below are fields declared on Cloudflare's
-   * `@cf/deepgram/nova-3` input type — nothing invented. Hold-to-talk closes
-   * the stream itself, so `endpointing` is disabled to avoid mid-pause
-   * finals that discard acoustic context for the next phrase.
+   * `{ websocket: true }`; recognition options travel in the same call, and
+   * `recognitionOptions` explains them. They are fields declared on
+   * Cloudflare's `@cf/deepgram/nova-3` input type — nothing invented.
+   * Hold-to-talk closes the stream itself, so `endpointing` is disabled to
+   * avoid mid-pause finals that discard acoustic context for the next phrase.
    */
   async #connectUpstream(frame: StartFrame, keyterms: string[]): Promise<void> {
-    const language = recognitionLanguage(frame.locale);
-    const english = language.startsWith("en");
     const response = (await this.env.AI.run(
       this.env.STT_MODEL as never,
-      {
-        encoding: "linear16",
-        sample_rate: String(SAMPLE_RATE),
-        channels: "1",
-        interim_results: "true",
-        punctuate: "true",
-        smart_format: "true",
-        // Spoken "period" / "comma" → punctuation, and "twenty five" → "25".
-        // Both are English-only in Deepgram; for other languages the cleanup
-        // pass converts dictated punctuation instead.
-        ...(english ? { dictation: "true", numerals: "true" } : {}),
-        // Keep fillers out of the raw transcript; cleanup still strips hedges.
-        filler_words: "false",
-        // Client issues CloseStream on hotkey-up; do not auto-finalize on pause.
-        endpointing: "false",
-        language,
-        ...(keyterms.length > 0 ? { keyterm: keyterms } : {}),
-      } as never,
+      recognitionOptions(frame.locale, keyterms) as never,
       { websocket: true } as never,
     )) as unknown as Response & { webSocket?: WebSocket };
 
