@@ -185,6 +185,17 @@ describe("rejecting shortened cleanups", () => {
     const summary = "Refactor auth middleware to prefer device tokens, keep errors, add tests.";
     expect(judgeCleanup(prompt, summary)).toEqual({ ok: false, reason: "dropped_words" });
   });
+
+  it("rejects an instruction rewritten as if it were carried out", () => {
+    // Seen in production: both "find"s were dropped and "those" became
+    // "these", turning a request into a statement. The old half-the-words
+    // check let it through.
+    const raw =
+      "find some premium domain names from weld like weldsuite welddesk find those that are smart to claim for building products later";
+    const rewritten =
+      "Some premium domain names from Weld like:\n• WeldSuite\n• WeldDesk\n\nThese are smart to claim for building products later.";
+    expect(judgeCleanup(raw, rewritten)).toEqual({ ok: false, reason: "dropped_words" });
+  });
 });
 
 describe("cleanup", () => {
