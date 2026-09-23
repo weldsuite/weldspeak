@@ -63,15 +63,15 @@ export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
 /**
  * Recognition language for Deepgram.
  *
- * With no language set, Nova-3 assumes English, and streaming has no language
- * detection, so "Detect automatically" used to mean "English only". `multi`
- * is Nova-3's code-switching mode: it recognises English, Dutch, German,
- * French, Spanish, Portuguese, Italian, Russian, Hindi, and Japanese, even
- * mixed within one sentence. Other languages need to be chosen explicitly.
+ * English unless the speaker picked a language. Streaming Nova-3 has no
+ * language detection, and its `multi` code-switching mode, tried as the
+ * default, decides the language word by word: English words that resemble
+ * Dutch or German came out mangled, and product names were split. `multi`
+ * stays available for people who mix languages, as an explicit choice.
  */
 export function recognitionLanguage(locale: string | null | undefined): string {
   const chosen = locale?.trim();
-  return chosen ? chosen : "multi";
+  return chosen ? chosen : "en";
 }
 
 /**
