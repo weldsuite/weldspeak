@@ -34,28 +34,60 @@ import { loadTerms } from "./routes/dictionary.js";
 import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
 import type { DictionaryTerm, FieldContext } from "@weldspeak/protocol";
 
-/** Deepgram keyterm budget — keep the list short and unique. */
-const MAX_KEYTERMS = 100;
+/**
+ * Keyterm budget.
+ *
+ * Deepgram advises the 20–50 terms that matter most and rejects a request
+ * over 500 tokens. Every boost pulls the recognizer towards that word, so a
+ * long list of marginal terms costs accuracy on everything else said.
+ */
+const MAX_KEYTERMS = 50;
+/** Characters across all keyterms, a safe margin under the 500-token cap. */
+const MAX_KEYTERM_CHARS = 1_200;
+/** Glossary entries shown to the cleanup model. */
+export const MAX_CLEANUP_TERMS = 100;
+
+/**
+ * The glossary, most useful first.
+ *
+ * Terms someone corrected the recognizer towards (they carry `soundsLike`)
+ * come first: those are words it demonstrably gets wrong. Then the org's
+ * shared glossary, then personal terms, newest first within each. The order
+ * decides what survives the caps, which used to be the alphabet.
+ */
+export function rankTerms(terms: DictionaryTerm[]): DictionaryTerm[] {
+  const weight = (term: DictionaryTerm) =>
+    (term.soundsLike?.trim() ? 2 : 0) + (term.scope === "org" ? 1 : 0);
+  return [...terms].sort(
+    (a, b) =>
+      weight(b) - weight(a) ||
+      b.createdAt.localeCompare(a.createdAt) ||
+      a.term.localeCompare(b.term),
+  );
+}
 
 /**
  * Build the Deepgram `keyterm` list from the glossary.
  *
- * Written forms and optional `soundsLike` spellings both boost recognition;
- * duplicates are dropped. Cap keeps the Workers AI payload bounded.
+ * Only the written form is boosted. `soundsLike` is how the recognizer
+ * misheard a term ("in colonel" for "Inconel"); boosting it made the
+ * recognizer more likely to write exactly the mistake the entry exists to
+ * fix. The cleanup pass still sees it as a hint.
  */
 export function glossaryKeyterms(terms: DictionaryTerm[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const term of terms) {
-    for (const candidate of [term.term, term.soundsLike]) {
-      const value = candidate?.trim();
-      if (!value) continue;
-      const key = value.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(value);
-      if (out.length >= MAX_KEYTERMS) return out;
-    }
+  let chars = 0;
+  for (const term of rankTerms(terms)) {
+    const value = term.term.trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    if (chars + value.length > MAX_KEYTERM_CHARS) continue;
+    seen.add(key);
+    out.push(value);
+    chars += value.length;
+    if (out.length >= MAX_KEYTERMS) break;
   }
   return out;
 }
@@ -264,9 +296,7 @@ export class DictationSession extends DurableObject<Env> {
 
     // The org glossary is merged server-side rather than trusting the client's
     // keyterm list: it keeps the vocabulary authoritative and stops a client
-    // from probing another org's glossary by guessing terms. Include
-    // `soundsLike` hints as extra keyterms so pronunciation spellings also
-    // boost the written form Deepgram should emit.
+    // from probing another org's glossary by guessing terms.
     const terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
     const keyterms = glossaryKeyterms(terms);
 
@@ -420,7 +450,10 @@ export class DictationSession extends DurableObject<Env> {
 
     const shouldFormat = this.#startFrame?.format !== false;
     const terms = shouldFormat
-      ? await loadTerms(this.env.DB, identity.userId, identity.orgId)
+      ? rankTerms(await loadTerms(this.env.DB, identity.userId, identity.orgId)).slice(
+          0,
+          MAX_CLEANUP_TERMS,
+        )
       : [];
 
     const { text, formatted } = shouldFormat

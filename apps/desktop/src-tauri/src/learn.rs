@@ -1,8 +1,14 @@
 //! Learn vocabulary from what the user does after a dictation.
 //!
-//! Two sources: distinctive names in the inserted text itself, and the edit
-//! they type when the recognizer got a word wrong. Both land in the personal
-//! dictionary so cleanup and the next utterance see them.
+//! The only source is the edit they make when the recognizer got a word
+//! wrong. It lands in the personal dictionary so cleanup and the next
+//! utterance see it.
+//!
+//! Words are never picked out of the inserted text itself. That text is the
+//! recognizer's own output, so it can teach nothing the recognizer does not
+//! already produce — and it did harm: "Maybe", "Honestly" and misheard words
+//! were boosted on every later dictation, so accuracy fell the more the app
+//! was used.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -27,13 +33,8 @@ pub fn invalidate() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Watch for an edit of `inserted`, and add names from it to the dictionary.
+/// Watch for an edit of `inserted`, and learn the words the user fixes.
 pub fn after_inject(app: &AppHandle, inserted: String) {
-    let terms = learn::glossary_candidates(&inserted);
-    if !terms.is_empty() {
-        persist(app, Vec::new(), terms);
-    }
-
     let gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
     std::thread::Builder::new()
@@ -134,7 +135,7 @@ fn watch_loop(app: AppHandle, inserted: String, gen: u64) {
         return;
     }
 
-    persist(&app, found, Vec::new());
+    persist(&app, found);
 }
 
 struct DownNow {
@@ -257,34 +258,28 @@ fn read_field(app: &AppHandle) -> Option<String> {
     }
 }
 
-fn persist(app: &AppHandle, corrections: Vec<Correction>, terms: Vec<String>) {
+fn persist(app: &AppHandle, corrections: Vec<Correction>) {
     let path = crate::settings::path_for(app).ok();
-    let mut uploaded = Vec::new();
+    let Some(first) = corrections
+        .first()
+        .map(|correction| correction.meant.clone())
+    else {
+        return;
+    };
     {
         let state = app.state::<AppState>();
         let Ok(mut settings) = state.settings.lock() else {
             return;
         };
         for correction in corrections {
-            uploaded.push((correction.heard.clone(), correction.meant.clone()));
             learn::merge(&mut settings.corrections, correction);
-        }
-        for term in terms {
-            uploaded.push((String::new(), term.clone()));
-            learn::merge_term(&mut settings.pending_terms, &term);
         }
         if let Some(path) = path {
             let _ = settings.save(&path);
         }
     }
 
-    if uploaded.is_empty() {
-        return;
-    }
-
-    if let Some((_, meant)) = uploaded.iter().find(|(heard, _)| !heard.is_empty()) {
-        crate::overlay::show_notice(app, &format!("Added “{meant}” to your dictionary"));
-    }
+    crate::overlay::show_notice(app, &format!("Added “{first}” to your dictionary"));
 
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -305,7 +300,7 @@ pub fn apply(text: &str, corrections: &[Correction]) -> String {
 }
 
 pub async fn flush_to_dictionary(app: &AppHandle) {
-    let (api_base, org_id, corrections, pending) = {
+    let (api_base, org_id, corrections) = {
         let state = app.state::<AppState>();
         let Ok(settings) = state.settings.lock() else {
             return;
@@ -314,7 +309,6 @@ pub async fn flush_to_dictionary(app: &AppHandle) {
             settings.api_base.clone(),
             settings.org_id.clone(),
             settings.corrections.clone(),
-            settings.pending_terms.clone(),
         )
     };
 
@@ -330,12 +324,6 @@ pub async fn flush_to_dictionary(app: &AppHandle) {
         return;
     };
 
-    let mut ok_terms = Vec::new();
-    for term in pending {
-        if push_term(app, &api_base, &token, org_id.as_deref(), "", &term).await {
-            ok_terms.push(term);
-        }
-    }
     for correction in corrections.iter().take(40) {
         let _ = push_term(
             app,
@@ -347,19 +335,6 @@ pub async fn flush_to_dictionary(app: &AppHandle) {
         )
         .await;
     }
-
-    if ok_terms.is_empty() {
-        return;
-    }
-    let path = crate::settings::path_for(app).ok();
-    if let Ok(mut settings) = app.state::<AppState>().settings.lock() {
-        settings
-            .pending_terms
-            .retain(|term| !ok_terms.iter().any(|ok| ok.eq_ignore_ascii_case(term)));
-        if let Some(path) = path {
-            let _ = settings.save(&path);
-        }
-    }
 }
 
 async fn push_term(
@@ -370,10 +345,7 @@ async fn push_term(
     heard: &str,
     meant: &str,
 ) -> bool {
-    let body = serde_json::json!({
-        "heard": if heard.is_empty() { serde_json::Value::Null } else { heard.into() },
-        "meant": meant,
-    });
+    let body = serde_json::json!({ "heard": heard, "meant": meant });
     crate::api::json::<serde_json::Value, _>(
         api_base,
         token,

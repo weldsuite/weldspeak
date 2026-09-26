@@ -71,10 +71,6 @@ pub struct Settings {
     #[serde(default)]
     pub corrections: Vec<weldspeak_core::Correction>,
 
-    /// Glossary terms waiting to be uploaded, if sign-in had not happened yet.
-    #[serde(default)]
-    pub pending_terms: Vec<String>,
-
     /// Running count of words inserted. Displayed in Settings, not synced.
     #[serde(default)]
     pub words_dictated: u64,
@@ -95,7 +91,6 @@ impl Default for Settings {
             microphone: None,
             snippets: Vec::new(),
             corrections: Vec::new(),
-            pending_terms: Vec::new(),
             words_dictated: 0,
         }
     }

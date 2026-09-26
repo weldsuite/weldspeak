@@ -269,12 +269,18 @@ impl Capture {
         }
     }
 
-    /// Begin sending frames, returning the retained pre-roll to send first.
-    pub fn arm(&self) -> Vec<Frame> {
-        self.shared
-            .lock()
-            .map(|mut pipeline| pipeline.framer.arm())
-            .unwrap_or_default()
+    /// Begin sending frames, handing the retained pre-roll to `send` first.
+    ///
+    /// `send` runs while the pipeline lock is held. The audio callback needs
+    /// that lock to emit a live frame, so no live frame can be queued ahead of
+    /// or among the pre-roll; arming and then sending after the lock was
+    /// released let one slip in and scrambled the start of the utterance.
+    pub fn arm_with(&self, mut send: impl FnMut(Frame)) {
+        if let Ok(mut pipeline) = self.shared.lock() {
+            for frame in pipeline.framer.arm() {
+                send(frame);
+            }
+        }
     }
 
     /// Stop sending frames and drop any partial frame.

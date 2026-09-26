@@ -108,7 +108,11 @@ export interface CreateTermRequest {
 }
 
 export interface LearnCorrectionRequest {
-  /** What the recognizer or formatter wrote, if known. */
+  /**
+   * What the recognizer or formatter wrote. Required in practice: a request
+   * without it is acknowledged but not stored, since a word picked out of a
+   * dictation with no correction behind it teaches the recognizer nothing.
+   */
   heard?: string | null;
   /** The spelling that should be used from now on. */
   meant: string;

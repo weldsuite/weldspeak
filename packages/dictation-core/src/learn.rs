@@ -287,84 +287,11 @@ pub fn from_keystrokes(
         .filter(is_learnable)
 }
 
-/// Names and jargon from a finished dictation that belong in the glossary.
-///
-/// Conservative on purpose: adding "Please" or "Today" would drown the terms
-/// that actually change recognition. Digits, camel-ish tokens, and mid-sentence
-/// capitals are the shapes people bother to put in a dictionary by hand.
-pub fn glossary_candidates(text: &str) -> Vec<String> {
-    let tokens = words(text);
-    let mut found = Vec::new();
-
-    for (index, token) in tokens.iter().enumerate() {
-        let trimmed = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-');
-        if trimmed.is_empty()
-            || found
-                .iter()
-                .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
-        {
-            continue;
-        }
-        if trimmed.chars().all(|ch| ch.is_ascii_digit()) && (2..=6).contains(&trimmed.len()) {
-            if let Some(last) = found.last_mut() {
-                if last.chars().any(|ch| ch.is_alphabetic())
-                    && !last.chars().any(|ch| ch.is_ascii_digit())
-                {
-                    last.push(' ');
-                    last.push_str(trimmed);
-                    continue;
-                }
-            }
-        }
-        if looks_like_glossary_term(trimmed, index == 0) {
-            found.push(trimmed.to_string());
-        }
-        if found.len() == 6 {
-            break;
-        }
-    }
-
-    found
-}
-
 /// Newest correction for a given `heard` wins; cap the list so it cannot grow without bound.
 pub fn merge(list: &mut Vec<Correction>, next: Correction) {
     list.retain(|item| !item.heard.eq_ignore_ascii_case(&next.heard));
     list.insert(0, next);
     list.truncate(100);
-}
-
-pub fn merge_term(list: &mut Vec<String>, term: &str) {
-    let Some(term) = normalize_span(term) else {
-        return;
-    };
-    list.retain(|item| !item.eq_ignore_ascii_case(&term));
-    list.insert(0, term);
-    list.truncate(100);
-}
-
-fn looks_like_glossary_term(token: &str, sentence_start: bool) -> bool {
-    if token.len() > MAX_SPAN || token.len() < 3 {
-        return false;
-    }
-    let lower = token.to_ascii_lowercase();
-    if COMMON.contains(&lower.as_str()) {
-        return false;
-    }
-    if token.chars().any(|ch| ch.is_ascii_digit()) {
-        return token.chars().any(|ch| ch.is_ascii_alphabetic());
-    }
-    if token.contains('-') && token.chars().any(|ch| ch.is_ascii_alphabetic()) {
-        return true;
-    }
-    if sentence_start {
-        return false;
-    }
-    let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_uppercase() && token.len() >= 4
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -565,14 +492,6 @@ mod tests {
                 meant: "Inconel 625".into(),
             })
         );
-    }
-
-    #[test]
-    fn picks_out_alloy_codes_and_mid_sentence_names() {
-        let terms = glossary_candidates("Please inspect weld W12 on the Inconel 625 coupon.");
-        assert!(terms.iter().any(|term| term == "W12"));
-        assert!(terms.iter().any(|term| term == "Inconel 625"));
-        assert!(!terms.iter().any(|term| term == "Please"));
     }
 
     fn correction(heard: &str, meant: &str) -> Correction {

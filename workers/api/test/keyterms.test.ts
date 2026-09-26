@@ -1,34 +1,66 @@
 import { describe, expect, it } from "vitest";
 import type { DictionaryTerm } from "@weldspeak/protocol";
-import { glossaryKeyterms, recognitionLanguage, recognitionOptions } from "../src/session-do.js";
+import {
+  glossaryKeyterms,
+  rankTerms,
+  recognitionLanguage,
+  recognitionOptions,
+} from "../src/session-do.js";
 
 const term = (
   name: string,
   soundsLike: string | null = null,
+  extra: Partial<DictionaryTerm> = {},
 ): DictionaryTerm => ({
   id: name,
   scope: "user",
   term: name,
   soundsLike,
-  createdAt: "2026-01-01T00:00:00.000Z",
+  createdAt: "2026-01-01 00:00:00",
+  ...extra,
 });
 
 describe("glossaryKeyterms", () => {
-  it("includes soundsLike spellings as extra boosts", () => {
-    expect(glossaryKeyterms([term("Inconel 625", "in-co-nel")])).toEqual([
+  it("boosts the written form, never the misheard one", () => {
+    // Boosting "in colonel" pulled the recognizer towards the very mistake
+    // the entry exists to fix.
+    expect(glossaryKeyterms([term("Inconel 625", "in colonel six twenty five")])).toEqual([
       "Inconel 625",
-      "in-co-nel",
     ]);
   });
 
-  it("dedupes case-insensitively and skips empty soundsLike", () => {
-    expect(
-      glossaryKeyterms([
-        term("TIG", null),
-        term("tig", "tee eye gee"),
-        term("MIG", "  "),
-      ]),
-    ).toEqual(["TIG", "tee eye gee", "MIG"]);
+  it("dedupes case-insensitively and skips blanks", () => {
+    const out = glossaryKeyterms([term("TIG"), term("tig"), term("  "), term("MIG")]);
+    expect(out.map((value) => value.toLowerCase()).sort()).toEqual(["mig", "tig"]);
+  });
+
+  it("keeps at most 50 terms, and not simply the first 50 alphabetically", () => {
+    const filler = Array.from({ length: 80 }, (_, index) =>
+      term(`Aaa${String(index).padStart(2, "0")}`),
+    );
+    const corrected = term("Zirconium", "sir cone ium");
+    const out = glossaryKeyterms([...filler, corrected]);
+    expect(out).toHaveLength(50);
+    expect(out[0]).toBe("Zirconium");
+  });
+
+  it("stays inside Deepgram's token budget with long terms", () => {
+    const long = Array.from({ length: 50 }, (_, index) => term(`${"x".repeat(100)}${index}`));
+    const out = glossaryKeyterms(long);
+    expect(out.join("").length).toBeLessThanOrEqual(1_200);
+    expect(out.length).toBeGreaterThan(0);
+  });
+});
+
+describe("rankTerms", () => {
+  it("puts corrections first, then the org glossary, then newest personal terms", () => {
+    const ranked = rankTerms([
+      term("old personal", null, { createdAt: "2026-01-01 00:00:00" }),
+      term("new personal", null, { createdAt: "2026-03-01 00:00:00" }),
+      term("shared", null, { scope: "org" }),
+      term("Claude Code", "cloud code"),
+    ]).map((entry) => entry.term);
+    expect(ranked).toEqual(["Claude Code", "shared", "new personal", "old personal"]);
   });
 });
 

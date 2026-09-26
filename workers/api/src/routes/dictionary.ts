@@ -33,6 +33,8 @@ const toTerm = (row: TermRow): DictionaryTerm => ({
  *
  * Shared by the HTTP route and the dictation session, so recognition boosts
  * and the cleanup prompt always draw on exactly the same vocabulary.
+ * Harvested rows (see migrations/0003_term_source.sql) are left out: they are
+ * words WeldSpeak picked out of its own output, not vocabulary anyone chose.
  */
 export async function loadTerms(
   db: D1Database,
@@ -43,8 +45,9 @@ export async function loadTerms(
     .prepare(
       `SELECT id, scope, term, sounds_like, created_at
          FROM dictionary_terms
-        WHERE (scope = 'user' AND clerk_user_id = ?)
-           OR (scope = 'org'  AND clerk_org_id = ?)
+        WHERE ((scope = 'user' AND clerk_user_id = ?)
+            OR (scope = 'org'  AND clerk_org_id = ?))
+          AND source <> 'harvested'
         ORDER BY term COLLATE NOCASE`,
     )
     // An empty string never matches a real Clerk org ID, so personal-scope
@@ -98,6 +101,32 @@ dictionaryRoutes.post("/", async (c) => {
   const id = crypto.randomUUID();
   const soundsLike = body?.soundsLike?.trim() || null;
 
+  // A personal term an older desktop build harvested is hidden, not gone.
+  // Typing it in by hand is a deliberate choice, so it comes back as manual
+  // rather than failing as a duplicate of a row the person cannot see.
+  if (scope === "user") {
+    const revived = await c.env.DB.prepare(
+      `UPDATE dictionary_terms
+          SET source = 'manual', sounds_like = ?, created_at = datetime('now')
+        WHERE scope = 'user' AND clerk_user_id = ? AND term = ? AND source = 'harvested'
+        RETURNING id, created_at`,
+    )
+      .bind(soundsLike, userId, term)
+      .first<{ id: string; created_at: string }>();
+    if (revived) {
+      return c.json(
+        {
+          id: revived.id,
+          scope,
+          term,
+          soundsLike,
+          createdAt: revived.created_at,
+        } satisfies DictionaryTerm,
+        201,
+      );
+    }
+  }
+
   try {
     await c.env.DB.prepare(
       `INSERT INTO dictionary_terms (id, scope, clerk_user_id, clerk_org_id, term, sounds_like)
@@ -148,8 +177,15 @@ dictionaryRoutes.post("/learn", async (c) => {
   if (heard && heard.length > 128) {
     return c.json({ error: "bad_request", message: "heard must be 128 characters or fewer" }, 400);
   }
-  const soundsLike =
-    heard && heard.toLocaleLowerCase() !== meant.toLocaleLowerCase() ? heard : null;
+  // Only a correction teaches anything: a word the person fixed after the
+  // recognizer got it wrong. Older desktop builds also sent words picked out
+  // of the dictation itself, with no `heard`; boosting those made recognition
+  // worse with use. They are acknowledged so those builds stop retrying, and
+  // otherwise ignored.
+  if (!heard) {
+    return c.json({ ok: true, ignored: true });
+  }
+  const soundsLike = heard.toLocaleLowerCase() !== meant.toLocaleLowerCase() ? heard : null;
 
   const existing = await c.env.DB.prepare(
     `SELECT id, sounds_like, created_at
@@ -161,7 +197,13 @@ dictionaryRoutes.post("/learn", async (c) => {
 
   if (existing) {
     const nextSounds = soundsLike ?? existing.sounds_like;
-    await c.env.DB.prepare(`UPDATE dictionary_terms SET sounds_like = ? WHERE id = ?`)
+    // A harvested row the person has now corrected towards is real vocabulary.
+    await c.env.DB.prepare(
+      `UPDATE dictionary_terms
+          SET sounds_like = ?,
+              source = CASE source WHEN 'harvested' THEN 'correction' ELSE source END
+        WHERE id = ?`,
+    )
       .bind(nextSounds, existing.id)
       .run();
     return c.json({
@@ -175,8 +217,8 @@ dictionaryRoutes.post("/learn", async (c) => {
 
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
-    `INSERT INTO dictionary_terms (id, scope, clerk_user_id, clerk_org_id, term, sounds_like)
-     VALUES (?, 'user', ?, NULL, ?, ?)`,
+    `INSERT INTO dictionary_terms (id, scope, clerk_user_id, clerk_org_id, term, sounds_like, source)
+     VALUES (?, 'user', ?, NULL, ?, ?, 'correction')`,
   )
     .bind(id, userId, meant, soundsLike)
     .run();

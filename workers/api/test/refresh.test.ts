@@ -240,7 +240,7 @@ describe("auto-learned dictionary terms", () => {
     await call("/api/dictionary/learn", {
       method: "POST",
       token,
-      body: { meant: "Inconel 625" },
+      body: { heard: "inconel", meant: "Inconel 625" },
     });
     const again = await call("/api/dictionary/learn", {
       method: "POST",

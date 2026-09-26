@@ -348,16 +348,17 @@ fn start_streaming(app: &AppHandle) {
     let state = app.state::<AppState>();
 
     // Arming hands back everything held since hotkey-down (idle lead-in plus
-    // speech spoken while waiting for `ready`).
-    let preroll = state
-        .capture
-        .lock()
-        .ok()
-        .and_then(|capture| capture.as_ref().map(|capture| capture.arm()))
-        .unwrap_or_default();
-
-    for frame in preroll {
-        send(app, Outbound::Audio(frame));
+    // speech spoken while waiting for `ready`). It is queued before any live
+    // frame can be, so the recognizer hears the utterance in order.
+    let sender = state.outbound.lock().ok().and_then(|slot| slot.clone());
+    if let Ok(capture) = state.capture.lock() {
+        if let Some(capture) = capture.as_ref() {
+            capture.arm_with(|frame| {
+                if let Some(sender) = &sender {
+                    let _ = sender.send(Outbound::Audio(frame));
+                }
+            });
+        }
     }
 
     let _ = app.emit("weldspeak://listening", ());
