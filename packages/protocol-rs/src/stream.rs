@@ -80,6 +80,10 @@ pub enum ClientFrame {
         /// Run the cleanup pass. When false the raw transcript is returned.
         #[serde(skip_serializing_if = "Option::is_none")]
         format: Option<bool>,
+        /// Fast mode: skip cleanup when the transcript has nothing for it to
+        /// fix. Servers that predate it ignore the field and always clean up.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast: Option<bool>,
         /// Store the transcript in history. Only `false` changes anything:
         /// the server already defaults to keeping it unless the org says not.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,6 +196,7 @@ mod tests {
             keyterms: Some(vec!["Inconel 625".into()]),
             app_name: None,
             format: Some(true),
+            fast: Some(true),
             retain: Some(false),
         };
 
@@ -201,6 +206,7 @@ mod tests {
         assert_eq!(json["orgId"], "org_123");
         assert_eq!(json["keyterms"][0], "Inconel 625");
         assert_eq!(json["retain"], false);
+        assert_eq!(json["fast"], true);
         // Absent optionals are omitted rather than sent as null.
         assert!(json.get("appName").is_none());
     }

@@ -13,6 +13,7 @@ import {
   appStyle,
   buildCleanupPrompt,
   cleanupDeadlineMs,
+  cleanupNeeded,
   cleanupTranscript,
   endsMidSentence,
   fitToCursor,
@@ -570,5 +571,35 @@ describe("cleanup through OpenRouter", () => {
 
     expect(await cleanupTranscript(env, "um the weld looks uh good", [])).toMatchObject({ formatted: true });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("fast mode", () => {
+  it("skips cleanup for a clean, punctuated sentence", () => {
+    expect(cleanupNeeded("Can you send me the weld procedure before Thursday?", [])).toBeNull();
+    expect(cleanupNeeded("Ship WeldSuite today.", [])).toBeNull();
+    expect(cleanupNeeded("Thanks!", [])).toBeNull();
+  });
+
+  it("keeps cleanup for what only the model can fix", () => {
+    expect(cleanupNeeded("Um, the weld looks good.", [])).toBe("fillers");
+    expect(cleanupNeeded("Let's meet Thursday, no, actually Wednesday.", [])).toBe("correction");
+    expect(cleanupNeeded("Hi Dana comma thanks for the report.", [])).toBe("spoken_format");
+    expect(cleanupNeeded("Open index dot ts.", [])).toBe("spoken_format");
+    expect(cleanupNeeded("The the bead looks wide.", [])).toBe("repeat");
+    expect(cleanupNeeded("we used the inconel on the root", [term("Inconel 625")])).toBe("unpunctuated");
+    expect(cleanupNeeded("We used in co nel.", [term("Inconel 625", "in co nel")])).toBe("sounds_like");
+    expect(cleanupNeeded(Array.from({ length: 40 }, () => "word").join(" ") + ".", [])).toBe("long");
+  });
+
+  it("keeps cleanup when dictating into the middle of a sentence", () => {
+    const field = { before: "I think we should" };
+    expect(cleanupNeeded("Move the launch to Friday.", [], field)).toBe("mid_sentence");
+    expect(cleanupNeeded("Move the launch to Friday.", [], { before: "Done." })).toBeNull();
+  });
+
+  it("catches fillers and corrections in other languages", () => {
+    expect(cleanupNeeded("Ehm, de las ziet er goed uit.", [])).toBe("fillers");
+    expect(cleanupNeeded("Wir treffen uns am Donnerstag, nein, warte, am Mittwoch.", [])).toBe("correction");
   });
 });

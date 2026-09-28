@@ -20,6 +20,7 @@ interface Settings {
   orgId: string | null;
   injection: "automatic" | "alwaysType" | "alwaysPaste";
   cleanUpText: boolean;
+  fastMode: boolean;
   locale: string | null;
   useContext: boolean;
   keepHistory: boolean;
@@ -113,6 +114,7 @@ const PREVIEW = {
     orgId: "org_preview",
     injection: "automatic",
     cleanUpText: true,
+    fastMode: true,
     locale: null,
     useContext: true,
     keepHistory: true,
@@ -856,6 +858,16 @@ function settingsPage(): string {
         s.cleanUpText,
         "Removes ums, false starts and repeats, and fixes punctuation. Off inserts exactly what you said.",
       )}
+      ${
+        s.cleanUpText
+          ? switchSetting(
+              "Fast mode",
+              "fastMode",
+              s.fastMode,
+              "Skips cleanup when what you said is already clean, so short sentences land right away. Anything with an um, a correction or spoken punctuation is still cleaned up.",
+            )
+          : ""
+      }
       ${selectSetting(
         "Insert text by",
         "injection",

@@ -187,6 +187,15 @@ export async function transcribe(
   };
 
   let response = await attempt(true);
+  if (response.status === 429) {
+    // Pieces of one dictation can be in flight together, and the provider
+    // rate-limits bursts with a one-second Retry-After. Waiting that second
+    // beats falling back to a weaker recognizer for the piece.
+    const retryAfter = Number(response.headers.get("Retry-After") ?? "1");
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1_500, Math.max(250, retryAfter * 1000))));
+    response = await attempt(true);
+  }
   if (response.status === 400) {
     const detail = await errorDetail(response);
     console.warn(JSON.stringify({ msg: "transcription rejected provider options; retrying without", detail }));

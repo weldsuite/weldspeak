@@ -152,3 +152,17 @@ describe("transcribe", () => {
     expect(transcriptionDeadlineMs(5 * 60_000)).toBe(60_000);
   });
 });
+
+describe("rate limiting", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("waits out a 429 once instead of giving the piece to the fallback", async () => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("slow down", { status: 429, headers: { "Retry-After": "0.25" } }))
+      .mockResolvedValueOnce(Response.json({ text: "Thanks, Dana." }));
+
+    await expect(transcribe(env, new Uint8Array(3200), { terms: [], audioMs: 100 })).resolves.toBe("Thanks, Dana.");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});

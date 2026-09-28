@@ -281,7 +281,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
 fn open_socket(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    let (api_base, org_id, locale, format, keep_history) = {
+    let (api_base, org_id, locale, format, fast, keep_history) = {
         let Ok(settings) = state.settings.lock() else {
             return;
         };
@@ -290,6 +290,7 @@ fn open_socket(app: &AppHandle) {
             settings.org_id.clone(),
             settings.locale.clone(),
             settings.clean_up_text,
+            settings.fast_mode,
             settings.keep_history,
         )
     };
@@ -327,6 +328,7 @@ fn open_socket(app: &AppHandle) {
         // going into, and cleanup styles a prompt differently from an email.
         app_name: crate::inject::focused_app_name(),
         format: Some(format),
+        fast: Some(fast),
         // "Keep my dictations" off: ask the server not to store this one.
         retain: Some(keep_history),
     }));
