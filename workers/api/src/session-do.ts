@@ -31,7 +31,14 @@ import {
 } from "./billing/entitlements.js";
 import { cleanupTranscript, fitToCursor } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
+import { hasSpeech, Segmenter } from "./segmenter.js";
 import { isWorkersAiModel, transcribe, transcribeFallback } from "./stt.js";
+
+/** One transcribed piece of a dictation, and which recognizer produced it. */
+interface Piece {
+  text: string;
+  engine: string;
+}
 import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
 import type { DictionaryTerm, FieldContext } from "@weldspeak/protocol";
 
@@ -116,6 +123,35 @@ export function recognitionOptions(
   };
 }
 
+/**
+ * How far the client's upload fell behind real time.
+ *
+ * Audio is produced in real time, so on a link that keeps up, the audio
+ * received stays a constant amount ahead of the wall clock: the pre-roll and
+ * whatever was held while the session started, sent as a burst. On a link
+ * that cannot carry 32 KB/s the lead shrinks, and the shortfall at `stop` is
+ * how long the user waited for their own audio to arrive after letting go.
+ */
+export class UploadClock {
+  #firstAt: number | null = null;
+  #audioMs = 0;
+  #maxLead = 0;
+
+  /** Record `ms` of audio arriving at `now`. */
+  add(ms: number, now: number): void {
+    this.#firstAt ??= now;
+    this.#audioMs += ms;
+    this.#maxLead = Math.max(this.#maxLead, this.#audioMs - (now - this.#firstAt));
+  }
+
+  /** Milliseconds the upload was behind when `stop` arrived at `now`. */
+  lagAt(now: number): number {
+    if (this.#firstAt === null) return 0;
+    const lead = this.#audioMs - (now - this.#firstAt);
+    return Math.max(0, Math.round(this.#maxLead - lead));
+  }
+}
+
 /** Identity handed to the DO by the Worker after it has authenticated the caller. */
 export interface SessionIdentity {
   userId: string;
@@ -155,15 +191,22 @@ export class DictationSession extends DurableObject<Env> {
   #lastUpstreamAt = 0;
 
   /**
-   * Batch recognition (MAI-Transcribe): audio is kept here and transcribed
-   * on `stop`, instead of being relayed to a streaming upstream.
+   * Batch recognition (MAI-Transcribe): audio is cut at pauses as it
+   * arrives, and each finished piece is transcribed while the speaker is
+   * still talking (see ./segmenter.ts). `stop` sends only the last piece.
    */
   #batch = false;
-  #audio: Uint8Array[] = [];
+  #segmenter = new Segmenter();
+  /** Transcriptions of the pieces sent so far, in order. */
+  #pieces: Promise<Piece | null>[] = [];
   /** Aborts an in-flight batch transcription when the dictation is cancelled. */
   #abort = new AbortController();
   /** Dictionary, loaded once at `start` for recognition and reused for cleanup. */
   #terms: DictionaryTerm[] = [];
+
+  #upload = new UploadClock();
+  /** Upload lag measured when `stop` arrived. */
+  #uploadLagMs = 0;
 
   /** When each stage finished, for the timings sent with the result. */
   #marks: Partial<Record<"start" | "ready" | "stop" | "transcribed" | "cleaned", number>> = {};
@@ -399,6 +442,7 @@ export class DictationSession extends DurableObject<Env> {
     if (!this.#started || this.#finalizing || this.#cancelled) return;
 
     this.#audioBytes += chunk.byteLength;
+    this.#upload.add(bytesToMs(chunk.byteLength), Date.now());
 
     if (bytesToMs(this.#audioBytes) > MAX_UTTERANCE_MS) {
       this.#fail("bad_request", "Utterance exceeded the maximum length");
@@ -406,7 +450,9 @@ export class DictationSession extends DurableObject<Env> {
     }
 
     if (this.#batch) {
-      this.#audio.push(new Uint8Array(chunk));
+      for (const piece of this.#segmenter.push(new Uint8Array(chunk))) {
+        this.#pieces.push(this.#transcribePiece(piece));
+      }
       return;
     }
 
@@ -424,14 +470,17 @@ export class DictationSession extends DurableObject<Env> {
     const identity = this.#identity!;
     const durationMs = bytesToMs(this.#audioBytes);
     this.#marks.stop = Date.now();
+    this.#uploadLagMs = this.#upload.lagAt(this.#marks.stop);
 
     let raw: string;
     let engine: string = this.env.STT_MODEL;
+    let pieces = 1;
     if (this.#batch) {
-      const recognized = await this.#transcribeBatch(durationMs);
+      const recognized = await this.#transcribeBatch();
       if (recognized === null) return;
       raw = recognized.text;
       engine = recognized.engine;
+      pieces = recognized.pieces;
     } else {
       // Tell the recognizer no more audio is coming, then give it a moment to
       // flush its final segment. Without this the tail of the last word is lost.
@@ -472,6 +521,10 @@ export class DictationSession extends DurableObject<Env> {
         msg: "dictation timings",
         engine,
         audioMs: Math.round(durationMs),
+        // Client → Worker as raw PCM, and Worker → OpenRouter as base64 WAV.
+        uploadKB: Math.round(this.#audioBytes / 1024),
+        // Pieces transcribed while the speaker talked, plus the last one.
+        ...(this.#batch ? { pieces } : {}),
         ...timings,
         formatted,
         ...(cleanup.reason ? { cleanup: cleanup.reason } : {}),
@@ -486,21 +539,39 @@ export class DictationSession extends DurableObject<Env> {
   }
 
   /**
-   * Transcribe the buffered utterance with MAI-Transcribe, falling back to
-   * batch Nova-3 if it fails. Returns null when the session ended instead:
-   * cancelled, or both recognizers failed and the client was told.
+   * Send the last piece and collect every piece's text, in order. Returns
+   * null when the session ended instead: cancelled, or a piece failed on
+   * both recognizers and the client was told.
    */
-  async #transcribeBatch(durationMs: number): Promise<{ text: string; engine: string } | null> {
-    const pcm = concat(this.#audio);
-    this.#audio = [];
-    if (pcm.byteLength === 0) return { text: "", engine: this.env.STT_MODEL };
+  async #transcribeBatch(): Promise<{ text: string; engine: string; pieces: number } | null> {
+    const floor = this.#segmenter.floor;
+    const rest = this.#segmenter.finish();
+    // Usually just the silence after the last word: nothing to send.
+    if (hasSpeech(rest, floor)) this.#pieces.push(this.#transcribePiece(rest));
+    const pieces = await Promise.all(this.#pieces);
+    this.#pieces = [];
+    if (this.#cancelled) return null;
 
+    if (pieces.some((piece) => piece === null)) {
+      this.#fail("upstream_failed", "Could not transcribe the recording", true);
+      return null;
+    }
+    const done = pieces as Piece[];
+    return {
+      text: done.map((piece) => piece.text).filter(Boolean).join(" "),
+      engine: done.some((piece) => piece.engine === "fallback") ? "fallback" : this.env.STT_MODEL,
+      pieces: done.length,
+    };
+  }
+
+  /** Transcribe one piece with MAI-Transcribe, falling back to batch Nova-3. */
+  async #transcribePiece(pcm: Uint8Array): Promise<Piece | null> {
     const locale = this.#startFrame?.locale;
     try {
       const text = await transcribe(this.env, pcm, {
         locale,
         terms: this.#terms,
-        audioMs: durationMs,
+        audioMs: bytesToMs(pcm.byteLength),
         signal: this.#abort.signal,
       });
       return { text, engine: this.env.STT_MODEL };
@@ -512,9 +583,7 @@ export class DictationSession extends DurableObject<Env> {
     try {
       return { text: await transcribeFallback(this.env.AI, pcm, locale), engine: "fallback" };
     } catch (error) {
-      if (!this.#cancelled) {
-        this.#fail("upstream_failed", `Could not transcribe the recording: ${error}`, true);
-      }
+      console.error(JSON.stringify({ msg: "fallback transcription failed", error: String(error) }));
       return null;
     }
   }
@@ -527,6 +596,9 @@ export class DictationSession extends DurableObject<Env> {
     const entries = {
       // Quota checks, dictionary load, and (streaming) the upstream handshake.
       setupMs: span(start, ready),
+      // How late the client's audio arrived: waited out before `stop` could
+      // even reach the server, so it is not part of serverMs.
+      uploadLagMs: this.#uploadLagMs,
       // Batch: the whole recognition. Streaming: flushing the last words.
       sttMs: span(stop, transcribed),
       cleanupMs: span(transcribed, cleaned),
@@ -606,7 +678,7 @@ export class DictationSession extends DurableObject<Env> {
 
   #teardown(): void {
     this.#abort.abort();
-    this.#audio = [];
+    this.#segmenter.finish();
     try {
       this.#upstream?.close();
     } catch {
@@ -622,13 +694,3 @@ export class DictationSession extends DurableObject<Env> {
   }
 }
 
-/** Join the buffered audio chunks into one PCM buffer. */
-function concat(chunks: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
