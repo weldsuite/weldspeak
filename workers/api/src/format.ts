@@ -28,6 +28,7 @@ import { isWorkersAiModel } from "./stt.js";
 export {
   appStyle,
   buildCleanupPrompt,
+  cleanupNeeded,
   endsMidSentence,
   fitToCursor,
   judgeCleanup,

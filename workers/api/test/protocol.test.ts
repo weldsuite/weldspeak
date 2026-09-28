@@ -53,6 +53,13 @@ describe("client frame parsing", () => {
     expect(frame).toMatchObject({ format: true });
   });
 
+  it("runs cleanup every time unless the client asks for fast mode", () => {
+    const start = { type: "start", sampleRate: 16_000, encoding: "linear16" };
+    expect(parseClientFrame(start)).toMatchObject({ fast: false });
+    expect(parseClientFrame({ ...start, fast: true })).toMatchObject({ fast: true });
+    expect(parseClientFrame({ ...start, fast: "yes" })).toMatchObject({ fast: false });
+  });
+
   it("keeps history unless the client opts out", () => {
     // Older desktop builds never send `retain`; their history must not vanish.
     const legacy = parseClientFrame({ type: "start", sampleRate: 16_000, encoding: "linear16" });

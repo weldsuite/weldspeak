@@ -29,7 +29,7 @@ import {
   isWordQuotaExceeded,
   type Entitlement,
 } from "./billing/entitlements.js";
-import { cleanupTranscript, fitToCursor } from "./format.js";
+import { cleanupNeeded, cleanupTranscript, fitToCursor, protectTerms } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
 import { hasSpeech, Segmenter } from "./segmenter.js";
 import { isWorkersAiModel, transcribe, transcribeFallback } from "./stt.js";
@@ -503,9 +503,13 @@ export class DictationSession extends DurableObject<Env> {
     }
 
     const shouldFormat = this.#startFrame?.format !== false;
-    const cleanup = shouldFormat
-      ? await cleanupTranscript(this.env, raw, this.#terms, { appName: this.#appName, field })
-      : { text: raw, formatted: false, reason: "disabled" };
+    // Fast mode: paste the recognizer's text when cleanup has nothing to fix.
+    const needs = shouldFormat && this.#startFrame?.fast ? cleanupNeeded(raw, this.#terms, field) : "off";
+    const cleanup = !shouldFormat
+      ? { text: raw, formatted: false, reason: "disabled" }
+      : needs === null
+        ? { text: protectTerms(raw, raw, this.#terms).text, formatted: false, reason: "fast" }
+        : await cleanupTranscript(this.env, raw, this.#terms, { appName: this.#appName, field });
     const { text, formatted } = cleanup;
     this.#marks.cleaned = Date.now();
 
@@ -528,6 +532,8 @@ export class DictationSession extends DurableObject<Env> {
         ...timings,
         formatted,
         ...(cleanup.reason ? { cleanup: cleanup.reason } : {}),
+        // Why fast mode still ran cleanup, to tune what it skips.
+        ...(needs && needs !== "off" ? { fastNeeds: needs } : {}),
       }),
     );
 

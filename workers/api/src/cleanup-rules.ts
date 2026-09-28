@@ -369,6 +369,53 @@ export function judgeCleanup(raw: string, cleaned: string, field?: FieldContext)
   return { ok: true };
 }
 
+// What only the cleanup model can fix. Any of these in the transcript means
+// fast mode still runs cleanup; the lists lean long, since a wrongly skipped
+// cleanup pastes "um" or "comma" into someone's email.
+const FILLERS =
+  /\b(?:um+|uh+|er+m?|ah+|hmm+|mhm|eh+m?|ehm|uhm|äh+m?|öhm|euh+|hein|este|o sea|nou|zeg maar|you know|i mean|sort of|kind of)\b/iu;
+const CORRECTIONS =
+  /\b(?:no|nope|wait|actually|sorry|scratch that|i meant|or rather|rather|let me rephrase|nee|nein|warte|eigentlich|eigenlijk|bedoel|non|attends|plutôt|perdón|mejor dicho)\b/iu;
+const SPOKEN_FORMAT =
+  /\b(?:comma|period|full stop|question mark|exclamation (?:mark|point)|colon|semicolon|new line|newline|new paragraph|next line|bullet(?: point)?|number (?:one|two|three|1|2|3)|dot|slash|backslash|underscore|dash|hyphen|hashtag|at sign|open (?:paren|bracket|quote)|close (?:paren|bracket|quote)|quote unquote|komma|punt|nieuwe regel|punkt|neue zeile|virgule|à la ligne)\b/iu;
+/** Past this length, paragraphs and run-on sentences are worth a pass. */
+const FAST_MAX_WORDS = 30;
+
+/**
+ * Why a transcript still needs the cleanup model, or null when it is clean
+ * enough to paste as-is.
+ *
+ * Fast mode skips cleanup when MAI-Transcribe's own output — punctuated and
+ * capitalised, fillers mostly dropped — has nothing left for the model to
+ * fix. That is the common short dictation, and skipping saves a model round
+ * trip after release. Anything the recognizer cannot handle alone keeps the
+ * pass: fillers, self-corrections, dictated punctuation or symbols, repeated
+ * words, a "sounds like" dictionary entry, text continuing a sentence at the
+ * cursor, a missing sentence end, or length.
+ */
+export function cleanupNeeded(
+  raw: string,
+  terms: DictionaryTerm[],
+  field?: FieldContext,
+): string | null {
+  const text = raw.trim();
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length > FAST_MAX_WORDS) return "long";
+  if (FILLERS.test(text)) return "fillers";
+  if (CORRECTIONS.test(text)) return "correction";
+  if (SPOKEN_FORMAT.test(text)) return "spoken_format";
+  const lower = words.map((word) => word.toLowerCase().replace(/[^\p{L}\p{N}']/gu, ""));
+  if (lower.some((word, i) => word && word === lower[i - 1])) return "repeat";
+  if (terms.some((term) => term.soundsLike?.trim() && text.toLowerCase().includes(term.soundsLike.trim().toLowerCase()))) {
+    return "sounds_like";
+  }
+  // Continuing a sentence needs a lowercase start — unless the first word is a
+  // name, which only the model can tell.
+  if (endsMidSentence(field?.before)) return "mid_sentence";
+  if (words.length > 3 && !/[.!?…:)"'”’]$/.test(text)) return "unpunctuated";
+  return null;
+}
+
 /**
  * The chat request for a cleanup model on OpenRouter.
  *

@@ -39,6 +39,12 @@ pub struct Settings {
     /// which some people prefer for code and note-taking.
     pub clean_up_text: bool,
 
+    /// Skip the cleanup pass when the transcript has nothing for it to fix,
+    /// so a clean sentence lands without waiting on a model. On by default:
+    /// the server keeps cleanup whenever there is a filler, correction,
+    /// dictated punctuation, or anything else only the model can fix.
+    pub fast_mode: bool,
+
     /// Language hint. None lets the model detect it.
     pub locale: Option<String>,
 
@@ -88,6 +94,7 @@ impl Default for Settings {
             org_id: None,
             injection: InjectionPreference::Automatic,
             clean_up_text: true,
+            fast_mode: true,
             locale: None,
             use_context: true,
             keep_history: true,
@@ -185,6 +192,7 @@ mod tests {
         // Cleanup on and automatic delivery: the app should be useful before
         // anyone opens settings.
         assert!(settings.clean_up_text);
+        assert!(settings.fast_mode);
         assert_eq!(settings.injection, InjectionPreference::Automatic);
         assert_eq!(settings.api_base, "https://weldspeak.weldsuite.org");
         assert_eq!(settings.pause_media, default_pause_media());
@@ -273,6 +281,8 @@ mod tests {
 
         assert_eq!(settings.api_base, "http://localhost:8787");
         assert!(settings.clean_up_text);
+        // Existing installs get fast mode without anyone opening Settings.
+        assert!(settings.fast_mode);
         assert!(settings.microphone.is_none());
     }
 

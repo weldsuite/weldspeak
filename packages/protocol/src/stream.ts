@@ -37,6 +37,11 @@ export interface StartFrame {
   /** Run the cleanup pass. When false the raw transcript is returned as-is. */
   format?: boolean;
   /**
+   * Fast mode: skip the cleanup pass when the transcript has nothing for it
+   * to fix, instead of always running it. Only meaningful with `format`.
+   */
+  fast?: boolean;
+  /**
    * Store this transcript in the user's history. The person can only opt
    * out: an org that turned retention off still wins when this is true.
    */
@@ -244,6 +249,7 @@ export function parseClientFrame(value: unknown): ClientFrame | null {
         keyterms,
         appName: typeof frame.appName === "string" ? frame.appName : null,
         format: typeof frame.format === "boolean" ? frame.format : true,
+        fast: frame.fast === true,
         retain: typeof frame.retain === "boolean" ? frame.retain : true,
       };
     }
