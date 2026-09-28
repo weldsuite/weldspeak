@@ -89,6 +89,15 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Optional Developer ID signing + notarization. Held under other
+          # names and exported only when set: Tauri treats an empty
+          # APPLE_SIGNING_IDENTITY as an identity and fails the build.
+          MAC_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MAC_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MAC_ID: ${{ secrets.APPLE_ID }}
+          MAC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MAC_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           extra=()
@@ -96,6 +105,23 @@ jobs:
             extra+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
           else
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set; this build cannot produce auto-updates."
+          fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ -n "$MAC_CERTIFICATE" ] && [ -n "$MAC_SIGNING_IDENTITY" ]; then
+              export APPLE_CERTIFICATE="$MAC_CERTIFICATE"
+              export APPLE_CERTIFICATE_PASSWORD="$MAC_CERTIFICATE_PASSWORD"
+              export APPLE_SIGNING_IDENTITY="$MAC_SIGNING_IDENTITY"
+              if [ -n "$MAC_ID" ] && [ -n "$MAC_PASSWORD" ] && [ -n "$MAC_TEAM_ID" ]; then
+                export APPLE_ID="$MAC_ID" APPLE_PASSWORD="$MAC_PASSWORD" APPLE_TEAM_ID="$MAC_TEAM_ID"
+              else
+                echo "::warning::Apple notarization credentials are not set; Gatekeeper will still block the download."
+              fi
+            else
+              # tauri.conf.json's signingIdentity "-" ad-hoc signs the bundle.
+              # Without it the .app carries only the linker's signature over
+              # the bare binary, and Gatekeeper calls the download "damaged".
+              echo "::warning::No Developer ID certificate; the app is ad-hoc signed and users must allow it under Privacy & Security."
+            fi
           fi
           pnpm --filter @weldspeak/desktop-ui exec tauri build ${{ matrix.args }} "${extra[@]}"
 

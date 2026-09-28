@@ -305,6 +305,41 @@ Distribution to other people needs an Apple Developer account (notarization)
 and a Windows code-signing certificate. Both have procurement lead time —
 start them early, they are the usual reason a release slips.
 
+### Installing an unnotarized macOS build
+
+Until a Developer ID certificate is configured, the `.app` is ad-hoc signed
+(`signingIdentity: "-"` in `tauri.conf.json`). Gatekeeper blocks it on first
+launch with "Apple could not verify WeldSpeak…". To allow it:
+
+1. Drag WeldSpeak into Applications and open it once. Dismiss the warning.
+2. Open **System Settings → Privacy & Security**, scroll down, and click
+   **Open Anyway** next to the WeldSpeak message.
+
+Or, from Terminal, remove the download quarantine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/WeldSpeak.app
+```
+
+Builds made before ad-hoc signing was added report "WeldSpeak is damaged and
+can't be opened". The app is not damaged: only the binary inside the bundle
+was signed, not the bundle itself, and macOS words that as damage. The
+`xattr` command above opens those builds too.
+
+### Signing and notarizing for macOS
+
+`desktop.yml` signs with a Developer ID and notarizes when these repository
+secrets exist. With them set, downloads open with no warning:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Base64 of the exported Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | The `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: WeldSuite (TEAMID)` |
+| `APPLE_ID` | The Apple ID email used for notarization |
+| `APPLE_PASSWORD` | An app-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | The 10-character team ID |
+
 macOS Accessibility permission resets when the app's signature changes, so keep
 the signing identity stable across releases or every update silently breaks
 injection for existing users.
