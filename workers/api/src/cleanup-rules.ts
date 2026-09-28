@@ -280,15 +280,37 @@ function contentWords(text: string): string[] {
  * "welding" → "welded"). Cleanup fixes misheard words, so an exact-only check
  * would reject the corrections it exists to make.
  */
-function wordKept(word: string, output: Set<string>): boolean {
-  if (output.has(word)) return true;
+function sameWord(word: string, candidate: string): boolean {
+  if (candidate === word) return true;
   const stem = word.slice(0, Math.max(4, word.length - 3));
-  for (const candidate of output) {
-    if (candidate.startsWith(stem) || (candidate.length >= 4 && word.startsWith(candidate))) {
-      return true;
-    }
-  }
-  return false;
+  return candidate.startsWith(stem) || (candidate.length >= 4 && word.startsWith(candidate));
+}
+
+/**
+ * Which spoken words survive in the output, each claiming its own copy.
+ *
+ * Checking only whether a word appears somewhere let a cleanup drop a
+ * closing sentence made of words said earlier — "…and after that send the
+ * changelog to the team" vanished because "changelog" and "team" were
+ * already in the text. Each output word now accounts for one spoken word.
+ * Exact matches are claimed first, so a stem match cannot take a word that
+ * another spoken word matches exactly.
+ */
+function matchWords(expected: string[], output: string[]): boolean[] {
+  const pool = [...output];
+  const kept = expected.map((word) => {
+    const at = pool.indexOf(word);
+    if (at === -1) return false;
+    pool.splice(at, 1);
+    return true;
+  });
+  return kept.map((done, i) => {
+    if (done) return true;
+    const at = pool.findIndex((candidate) => sameWord(expected[i]!, candidate));
+    if (at === -1) return false;
+    pool.splice(at, 1);
+    return true;
+  });
 }
 
 function normalizedWords(text: string): string[] {
@@ -349,8 +371,8 @@ export function judgeCleanup(raw: string, cleaned: string, field?: FieldContext)
   const expected = contentWords(raw);
   if (expected.length === 0) return { ok: true };
 
-  const output = new Set(contentWords(cleaned));
-  const missing = expected.filter((word) => !wordKept(word, output)).length;
+  const kept = matchWords(expected, contentWords(cleaned));
+  const missing = kept.filter((done) => !done).length;
   // A legitimate self-correction ("send it to John, wait, to Sarah") drops a
   // word even from a short utterance, so one miss is always allowed. Two would
   // let "The meeting is at three." pass for "what time is the meeting".
@@ -362,8 +384,7 @@ export function judgeCleanup(raw: string, cleaned: string, field?: FieldContext)
   // must survive — at least one of them, since a closing self-correction
   // legitimately replaces the others.
   if (expected.length >= 6) {
-    const tail = expected.slice(-4);
-    if (!tail.some((word) => wordKept(word, output))) return { ok: false, reason: "cut_off" };
+    if (!kept.slice(-4).some(Boolean)) return { ok: false, reason: "cut_off" };
   }
 
   return { ok: true };

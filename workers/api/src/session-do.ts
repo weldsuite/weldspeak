@@ -474,13 +474,13 @@ export class DictationSession extends DurableObject<Env> {
 
     let raw: string;
     let engine: string = this.env.STT_MODEL;
-    let pieces = 1;
+    let pieces: number[] = [];
     if (this.#batch) {
       const recognized = await this.#transcribeBatch();
       if (recognized === null) return;
       raw = recognized.text;
       engine = recognized.engine;
-      pieces = recognized.pieces;
+      pieces = recognized.pieceWords;
     } else {
       // Tell the recognizer no more audio is coming, then give it a moment to
       // flush its final segment. Without this the tail of the last word is lost.
@@ -527,8 +527,11 @@ export class DictationSession extends DurableObject<Env> {
         audioMs: Math.round(durationMs),
         // Client → Worker as raw PCM, and Worker → OpenRouter as base64 WAV.
         uploadKB: Math.round(this.#audioBytes / 1024),
-        // Pieces transcribed while the speaker talked, plus the last one.
-        ...(this.#batch ? { pieces } : {}),
+        // Words per piece, then before and after cleanup: counts only, never
+        // text, so a dictation that lost words shows which stage lost them.
+        ...(this.#batch ? { pieceWords: pieces } : {}),
+        rawWords: countWords(raw),
+        words: countWords(text),
         ...timings,
         formatted,
         ...(cleanup.reason ? { cleanup: cleanup.reason } : {}),
@@ -549,7 +552,7 @@ export class DictationSession extends DurableObject<Env> {
    * null when the session ended instead: cancelled, or a piece failed on
    * both recognizers and the client was told.
    */
-  async #transcribeBatch(): Promise<{ text: string; engine: string; pieces: number } | null> {
+  async #transcribeBatch(): Promise<{ text: string; engine: string; pieceWords: number[] } | null> {
     const floor = this.#segmenter.floor;
     const rest = this.#segmenter.finish();
     // Usually just the silence after the last word: nothing to send.
@@ -566,7 +569,7 @@ export class DictationSession extends DurableObject<Env> {
     return {
       text: done.map((piece) => piece.text).filter(Boolean).join(" "),
       engine: done.some((piece) => piece.engine === "fallback") ? "fallback" : this.env.STT_MODEL,
-      pieces: done.length,
+      pieceWords: done.map((piece) => countWords(piece.text)),
     };
   }
 
