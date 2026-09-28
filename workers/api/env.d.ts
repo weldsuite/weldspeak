@@ -16,5 +16,10 @@ declare namespace Cloudflare {
     CLERK_WEBHOOK_SECRET: string;
     /** Random 32+ byte secret used to sign WeldSpeak access tokens. */
     TOKEN_SIGNING_KEY: string;
+    /**
+     * OpenRouter key for MAI-Transcribe. Optional: without it every
+     * dictation falls back to batch Nova-3 on Workers AI.
+     */
+    OPENROUTER_API_KEY?: string;
   }
 }

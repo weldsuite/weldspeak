@@ -119,6 +119,12 @@ export interface ResultEvent {
   formatted: boolean;
   /** Audio duration, used for metering. */
   durationMs: number;
+  /**
+   * How long each server stage took, in milliseconds: `setupMs` (start to
+   * ready), `sttMs` (recognition after stop), `cleanupMs`, and `serverMs`
+   * (stop to result). Diagnostics only; clients that predate it ignore it.
+   */
+  timings?: Record<string, number>;
 }
 
 export type ErrorCode =
