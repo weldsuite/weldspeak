@@ -31,6 +31,7 @@ import {
 } from "./billing/entitlements.js";
 import { cleanupTranscript, fitToCursor } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
+import { isWorkersAiModel, transcribe, transcribeFallback } from "./stt.js";
 import { loadOrgSettings, orgUsageSeconds, userWordCount } from "./routes/org.js";
 import type { DictionaryTerm, FieldContext } from "@weldspeak/protocol";
 
@@ -75,7 +76,8 @@ export function recognitionLanguage(locale: string | null | undefined): string {
 }
 
 /**
- * Recognition options for the Nova-3 streaming call.
+ * Recognition options for the Nova-3 streaming call, used when `STT_MODEL`
+ * names a Workers AI model rather than MAI-Transcribe (see ./stt.ts).
  *
  * Every value is a string. Workers AI validates this payload as all-strings
  * and rejects a number or boolean with a 400 ("expected a string"), so
@@ -151,6 +153,20 @@ export class DictationSession extends DurableObject<Env> {
   #upstreamDone = false;
   /** When the recognizer last sent anything, for the post-stop quiet check. */
   #lastUpstreamAt = 0;
+
+  /**
+   * Batch recognition (MAI-Transcribe): audio is kept here and transcribed
+   * on `stop`, instead of being relayed to a streaming upstream.
+   */
+  #batch = false;
+  #audio: Uint8Array[] = [];
+  /** Aborts an in-flight batch transcription when the dictation is cancelled. */
+  #abort = new AbortController();
+  /** Dictionary, loaded once at `start` for recognition and reused for cleanup. */
+  #terms: DictionaryTerm[] = [];
+
+  /** When each stage finished, for the timings sent with the result. */
+  #marks: Partial<Record<"start" | "ready" | "stop" | "transcribed" | "cleaned", number>> = {};
 
   override async fetch(request: Request): Promise<Response> {
     const identityHeader = request.headers.get("X-WeldSpeak-Identity");
@@ -237,6 +253,7 @@ export class DictationSession extends DurableObject<Env> {
     }
 
     const identity = this.#identity!;
+    this.#marks.start = Date.now();
 
     // Free-tier word cap is per person (UTC calendar month), across orgs.
     const wordsUsed = await userWordCount(this.env.DB, identity.userId);
@@ -264,19 +281,22 @@ export class DictationSession extends DurableObject<Env> {
 
     // The org glossary is merged server-side rather than trusting the client's
     // keyterm list: it keeps the vocabulary authoritative and stops a client
-    // from probing another org's glossary by guessing terms. Include
-    // `soundsLike` hints as extra keyterms so pronunciation spellings also
-    // boost the written form Deepgram should emit.
-    const terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
-    const keyterms = glossaryKeyterms(terms);
+    // from probing another org's glossary by guessing terms.
+    this.#terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
+    this.#batch = !isWorkersAiModel(this.env.STT_MODEL);
 
-    try {
-      await this.#connectUpstream(frame, keyterms);
-    } catch (error) {
-      this.#fail("upstream_failed", `Could not reach the speech model: ${error}`, true);
-      return;
+    if (!this.#batch) {
+      // Include `soundsLike` hints as extra keyterms so pronunciation
+      // spellings also boost the written form Deepgram should emit.
+      try {
+        await this.#connectUpstream(frame, glossaryKeyterms(this.#terms));
+      } catch (error) {
+        this.#fail("upstream_failed", `Could not reach the speech model: ${error}`, true);
+        return;
+      }
     }
 
+    this.#marks.ready = Date.now();
     this.#send({ type: "ready", sessionId: crypto.randomUUID() });
   }
 
@@ -385,6 +405,11 @@ export class DictationSession extends DurableObject<Env> {
       return;
     }
 
+    if (this.#batch) {
+      this.#audio.push(new Uint8Array(chunk));
+      return;
+    }
+
     try {
       this.#upstream?.send(chunk);
     } catch {
@@ -398,44 +423,119 @@ export class DictationSession extends DurableObject<Env> {
 
     const identity = this.#identity!;
     const durationMs = bytesToMs(this.#audioBytes);
+    this.#marks.stop = Date.now();
 
-    // Tell the recognizer no more audio is coming, then give it a moment to
-    // flush its final segment. Without this the tail of the last word is lost.
-    try {
-      this.#upstream?.send(JSON.stringify({ type: "CloseStream" }));
-    } catch {
-      /* upstream already gone; whatever it sent is still in #finals */
+    let raw: string;
+    let engine: string = this.env.STT_MODEL;
+    if (this.#batch) {
+      const recognized = await this.#transcribeBatch(durationMs);
+      if (recognized === null) return;
+      raw = recognized.text;
+      engine = recognized.engine;
+    } else {
+      // Tell the recognizer no more audio is coming, then give it a moment to
+      // flush its final segment. Without this the tail of the last word is lost.
+      try {
+        this.#upstream?.send(JSON.stringify({ type: "CloseStream" }));
+      } catch {
+        /* upstream already gone; whatever it sent is still in #finals */
+      }
+      await this.#awaitFinalTranscript();
+      raw = [...this.#finals, this.#partial].filter(Boolean).join(" ").trim();
     }
-    await this.#awaitFinalTranscript();
-
-    const raw = [...this.#finals, this.#partial].filter(Boolean).join(" ").trim();
+    this.#marks.transcribed = Date.now();
 
     this.#send({ type: "transcript", text: raw });
 
     if (!raw) {
-      this.#send({ type: "result", text: "", raw: "", formatted: false, durationMs });
+      this.#send({ type: "result", text: "", raw: "", formatted: false, durationMs, timings: this.#timings() });
       this.#teardown();
       return;
     }
 
     const shouldFormat = this.#startFrame?.format !== false;
-    const terms = shouldFormat
-      ? await loadTerms(this.env.DB, identity.userId, identity.orgId)
-      : [];
-
-    const { text, formatted } = shouldFormat
-      ? await cleanupTranscript(this.env, raw, terms, { appName: this.#appName, field })
-      : { text: raw, formatted: false };
+    const cleanup = shouldFormat
+      ? await cleanupTranscript(this.env, raw, this.#terms, { appName: this.#appName, field })
+      : { text: raw, formatted: false, reason: "disabled" };
+    const { text, formatted } = cleanup;
+    this.#marks.cleaned = Date.now();
 
     // Spacing and punctuation at the cursor apply whether or not cleanup ran:
     // dictating mid-sentence should read like typing there would.
-    this.#send({ type: "result", text: fitToCursor(text, field), raw, formatted, durationMs });
+    const timings = this.#timings();
+    this.#send({ type: "result", text: fitToCursor(text, field), raw, formatted, durationMs, timings });
+
+    // One line per dictation, so a slow one can be pinned on a stage: the
+    // recognizer, the cleanup model, or the setup before the first word.
+    console.log(
+      JSON.stringify({
+        msg: "dictation timings",
+        engine,
+        audioMs: Math.round(durationMs),
+        ...timings,
+        formatted,
+        ...(cleanup.reason ? { cleanup: cleanup.reason } : {}),
+      }),
+    );
 
     // Persistence and metering happen after the result is on the wire: the
     // user has their text, and a slow write must not delay it.
     this.ctx.waitUntil(this.#persist(identity, raw, text, durationMs));
 
     this.#teardown();
+  }
+
+  /**
+   * Transcribe the buffered utterance with MAI-Transcribe, falling back to
+   * batch Nova-3 if it fails. Returns null when the session ended instead:
+   * cancelled, or both recognizers failed and the client was told.
+   */
+  async #transcribeBatch(durationMs: number): Promise<{ text: string; engine: string } | null> {
+    const pcm = concat(this.#audio);
+    this.#audio = [];
+    if (pcm.byteLength === 0) return { text: "", engine: this.env.STT_MODEL };
+
+    const locale = this.#startFrame?.locale;
+    try {
+      const text = await transcribe(this.env, pcm, {
+        locale,
+        terms: this.#terms,
+        audioMs: durationMs,
+        signal: this.#abort.signal,
+      });
+      return { text, engine: this.env.STT_MODEL };
+    } catch (error) {
+      if (this.#cancelled) return null;
+      console.warn(JSON.stringify({ msg: "transcription failed; using fallback", error: String(error) }));
+    }
+
+    try {
+      return { text: await transcribeFallback(this.env.AI, pcm, locale), engine: "fallback" };
+    } catch (error) {
+      if (!this.#cancelled) {
+        this.#fail("upstream_failed", `Could not transcribe the recording: ${error}`, true);
+      }
+      return null;
+    }
+  }
+
+  /** Stage durations for this dictation, in milliseconds. */
+  #timings(): Record<string, number> {
+    const { start, ready, stop, transcribed, cleaned } = this.#marks;
+    const span = (from?: number, to?: number) =>
+      from !== undefined && to !== undefined ? Math.max(0, to - from) : undefined;
+    const entries = {
+      // Quota checks, dictionary load, and (streaming) the upstream handshake.
+      setupMs: span(start, ready),
+      // Batch: the whole recognition. Streaming: flushing the last words.
+      sttMs: span(stop, transcribed),
+      cleanupMs: span(transcribed, cleaned),
+      // Release to result: the server's share of the wait the user feels.
+      serverMs: span(stop, cleaned ?? transcribed),
+    };
+    return Object.fromEntries(
+      Object.entries(entries).filter((entry): entry is [string, number] => entry[1] !== undefined),
+    );
   }
 
   /**
@@ -505,6 +605,8 @@ export class DictationSession extends DurableObject<Env> {
   }
 
   #teardown(): void {
+    this.#abort.abort();
+    this.#audio = [];
     try {
       this.#upstream?.close();
     } catch {
@@ -518,4 +620,15 @@ export class DictationSession extends DurableObject<Env> {
     this.#upstream = null;
     this.#client = null;
   }
+}
+
+/** Join the buffered audio chunks into one PCM buffer. */
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }

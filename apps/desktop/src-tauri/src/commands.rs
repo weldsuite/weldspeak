@@ -3,7 +3,6 @@
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
-use weldspeak_core::auth::now_secs;
 
 use crate::settings::Settings;
 use crate::{api, auth, hotkey, inject, AppState};
@@ -56,27 +55,19 @@ struct SessionContext {
     org_id: Option<String>,
 }
 
-fn session_context(app: &AppHandle) -> Result<SessionContext, String> {
+/// Where and as whom to call the API. Waits for a refresh in flight rather
+/// than reporting a session that is still being restored as signed out.
+async fn session_context(app: &AppHandle) -> Result<SessionContext, String> {
+    let token = match auth::access(app).await {
+        auth::Access::Token(token) => token,
+        auth::Access::Offline => return Err("Can't reach WeldSpeak. Check your connection.".into()),
+        auth::Access::SignedOut => return Err("Sign in to manage your dictionary.".into()),
+    };
     let state = app.state::<AppState>();
-    let api_base = state
-        .settings
-        .lock()
-        .map_err(|_| "settings unavailable")?
-        .api_base
-        .clone();
-    let org_id = state
-        .settings
-        .lock()
-        .map_err(|_| "settings unavailable")?
-        .org_id
-        .clone();
-    let token = state
-        .auth
-        .lock()
-        .map_err(|_| "session unavailable")?
-        .access_token(now_secs())
-        .map(str::to_owned)
-        .ok_or_else(|| "Sign in to manage your dictionary.".to_string())?;
+    let (api_base, org_id) = {
+        let settings = state.settings.lock().map_err(|_| "settings unavailable")?;
+        (settings.api_base.clone(), settings.org_id.clone())
+    };
     Ok(SessionContext {
         api_base,
         token,
@@ -155,9 +146,19 @@ pub fn open_permission_settings() -> Result<(), String> {
 #[tauri::command]
 pub async fn get_status(app: AppHandle) -> Status {
     let can_inject = inject::can_synthesise_input();
-    let Ok(ctx) = session_context(&app) else {
+    // Signed out only when there are no credentials. Saved credentials the
+    // server cannot be reached to renew are still a signed-in user.
+    if matches!(auth::access(&app).await, auth::Access::SignedOut) {
         return Status {
             signed_in: false,
+            email: None,
+            orgs: Vec::new(),
+            can_inject,
+        };
+    }
+    let Ok(ctx) = session_context(&app).await else {
+        return Status {
+            signed_in: true,
             email: None,
             orgs: Vec::new(),
             can_inject,
@@ -232,7 +233,10 @@ pub async fn begin_sign_in(app: AppHandle) -> Result<SignInStarted, String> {
                     tracing::error!(?error, "could not persist credentials");
                 }
 
+                // Under the refresh lock, so a renewal of an older session
+                // cannot finish afterwards and overwrite this one.
                 let state = app.state::<AppState>();
+                let _guard = state.refresh_lock.lock().await;
                 if let Ok(mut store) = state.auth.lock() {
                     store.accept(tokens);
                 }
@@ -275,7 +279,11 @@ pub(crate) fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn sign_out(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn sign_out(app: AppHandle) -> Result<(), String> {
+    // Waits out a renewal in flight: finishing after this, it would save a
+    // fresh refresh token and quietly sign the user back in.
+    let state = app.state::<AppState>();
+    let _guard = state.refresh_lock.lock().await;
     if let Ok(mut auth) = state.auth.lock() {
         auth.clear();
     }
@@ -284,7 +292,7 @@ pub fn sign_out(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn list_dictionary(app: AppHandle) -> Result<Vec<DictionaryTerm>, String> {
-    let ctx = session_context(&app)?;
+    let ctx = session_context(&app).await?;
     let response = api::json::<TermsResponse, ()>(
         &ctx.api_base,
         &ctx.token,
@@ -308,7 +316,7 @@ pub async fn add_dictionary_term(
     if trimmed.is_empty() {
         return Err("Type a word or phrase to add.".into());
     }
-    let ctx = session_context(&app)?;
+    let ctx = session_context(&app).await?;
     api::json::<DictionaryTerm, _>(
         &ctx.api_base,
         &ctx.token,
@@ -327,7 +335,7 @@ pub async fn add_dictionary_term(
 
 #[tauri::command]
 pub async fn delete_dictionary_term(app: AppHandle, id: String) -> Result<(), String> {
-    let ctx = session_context(&app)?;
+    let ctx = session_context(&app).await?;
     api::send::<()>(
         &ctx.api_base,
         &ctx.token,
@@ -375,7 +383,7 @@ pub fn paste_last_transcript(app: AppHandle) -> Result<String, String> {
         .lock()
         .map(|settings| settings.injection.into())
         .unwrap_or_default();
-    crate::inject_on_main_thread(&app, text.clone(), preference);
+    crate::inject_on_main_thread(&app, text.clone(), preference, None);
     Ok(text)
 }
 
@@ -413,7 +421,7 @@ pub struct TranscriptRecord {
 
 #[tauri::command]
 pub async fn list_transcripts(app: AppHandle) -> Result<Vec<TranscriptRecord>, String> {
-    let ctx = session_context(&app)?;
+    let ctx = session_context(&app).await?;
     let response = api::json::<TranscriptsResponse, ()>(
         &ctx.api_base,
         &ctx.token,
@@ -429,7 +437,7 @@ pub async fn list_transcripts(app: AppHandle) -> Result<Vec<TranscriptRecord>, S
 
 #[tauri::command]
 pub async fn delete_transcript(app: AppHandle, id: String) -> Result<(), String> {
-    let ctx = session_context(&app)?;
+    let ctx = session_context(&app).await?;
     api::send::<()>(
         &ctx.api_base,
         &ctx.token,

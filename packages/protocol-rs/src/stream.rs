@@ -5,6 +5,7 @@
 //! are only meaningful between a `start` and a `stop`/`cancel`.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// What surrounds the cursor in the field being dictated into.
 ///
@@ -136,6 +137,12 @@ pub enum ServerEvent {
         /// False when cleanup was disabled, failed, or missed its deadline.
         formatted: bool,
         duration_ms: u64,
+        /// Server-side stage durations in milliseconds, keyed by stage name
+        /// (`setupMs`, `sttMs`, `cleanupMs`, `serverMs`, ...). Diagnostics
+        /// only. A map rather than fields so the server can add a stage
+        /// without a client release; absent from servers that predate it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timings: Option<BTreeMap<String, u64>>,
     },
 
     /// Terminal failure.
@@ -260,6 +267,46 @@ mod tests {
             }
             other => panic!("expected Result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn result_without_timings_still_deserializes() {
+        let event: ServerEvent = serde_json::from_str(
+            r#"{"type":"result","text":"Hi.","raw":"hi","formatted":false,"durationMs":5}"#,
+        )
+        .unwrap();
+        match event {
+            ServerEvent::Result { timings, .. } => assert_eq!(timings, None),
+            other => panic!("expected Result, got {other:?}"),
+        }
+
+        // Nor is an absent map sent as null.
+        let json = serde_json::to_value(ServerEvent::Result {
+            text: "Hi.".into(),
+            raw: "hi".into(),
+            formatted: false,
+            duration_ms: 5,
+            timings: None,
+        })
+        .unwrap();
+        assert!(json.get("timings").is_none());
+    }
+
+    #[test]
+    fn result_timings_round_trip() {
+        let wire = r#"{"type":"result","text":"Hello.","raw":"hello","formatted":true,"durationMs":1200,"timings":{"cleanupMs":410,"serverMs":1080,"setupMs":120,"sttMs":640}}"#;
+        let event: ServerEvent = serde_json::from_str(wire).unwrap();
+        match &event {
+            ServerEvent::Result {
+                timings: Some(timings),
+                ..
+            } => {
+                assert_eq!(timings.get("sttMs"), Some(&640));
+                assert_eq!(timings.len(), 4);
+            }
+            other => panic!("expected Result with timings, got {other:?}"),
+        }
+        assert_eq!(serde_json::to_string(&event).unwrap(), wire);
     }
 
     #[test]

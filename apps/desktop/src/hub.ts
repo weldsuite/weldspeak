@@ -165,6 +165,12 @@ const state = {
   page: "home" as Page,
   settings: PREVIEW.settings as Settings,
   status: { signedIn: false, email: null, orgs: [], canInject: true } as Status,
+  /**
+   * False until the first status arrives. A saved session takes a network
+   * round trip to restore, and treating "not known yet" as signed out is what
+   * flashed the sign-in screen at every launch.
+   */
+  statusKnown: false,
   transcripts: [] as Transcript[],
   transcriptsLoaded: false,
   dictionary: [] as DictionaryTerm[],
@@ -207,6 +213,9 @@ export async function mountHub(element: HTMLElement): Promise<void> {
   render();
   await refreshAll();
 
+  // The saved session came back, or the server ended it. No toast: the user
+  // did nothing.
+  void listen("weldspeak://session-changed", () => void refreshAll());
   void listen("weldspeak://signed-in", async () => {
     state.signIn = null;
     await refreshAll();
@@ -262,6 +271,7 @@ async function refreshAll(): Promise<void> {
   ]);
   state.settings = settings;
   state.status = status;
+  state.statusKnown = true;
   await Promise.all([
     refreshTranscripts(),
     refreshDictionary(),
@@ -496,15 +506,18 @@ function page(): string {
 
 function homePage(): string {
   const { signedIn } = state.status;
+  // Until the status is known, assume the common case — a returning user —
+  // and show placeholders rather than a sign-in prompt that may be wrong.
+  const returning = signedIn || !state.statusKnown;
   return `
     <header class="page-head">
       <div>
-        <h1 class="display">${signedIn ? "Welcome back" : "Welcome to WeldSpeak"}</h1>
+        <h1 class="display">${returning ? "Welcome back" : "Welcome to WeldSpeak"}</h1>
       </div>
       ${signedIn ? stats() : ""}
     </header>
-    ${signedIn ? howToCard() : signInCard()}
-    ${signedIn ? history() : ""}
+    ${returning ? howToCard() : signInCard()}
+    ${returning ? history() : ""}
   `;
 }
 
@@ -631,6 +644,9 @@ function dictionaryPage(): string {
     "Dictionary",
     "Names, jargon and part numbers WeldSpeak should always spell right.",
   );
+  if (!state.statusKnown) {
+    return head + `<div class="history"><div class="skeleton"></div><div class="skeleton"></div></div>`;
+  }
   if (!state.status.signedIn) return head + signedOutState("Sign in to build your dictionary.");
 
   const filter = state.dictFilter.trim().toLowerCase();
@@ -748,7 +764,13 @@ function settingsPage(): string {
     <section class="card">
       <h2 class="card-title">Account</h2>
       ${
-        status.signedIn
+        !state.statusKnown
+          ? `<div class="setting">
+               <div class="setting-copy">
+                 <strong>Checking your account…</strong>
+               </div>
+             </div>`
+          : status.signedIn
           ? `<div class="setting">
                <div class="account">
                  <span class="avatar" aria-hidden="true">${esc(initial(status.email))}</span>

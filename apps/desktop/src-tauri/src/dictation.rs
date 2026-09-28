@@ -10,9 +10,10 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc::unbounded_channel;
-use weldspeak_core::{Action, Event as SessionEvent, Frame};
+use weldspeak_core::{Action, Event as SessionEvent, Frame, State as SessionState};
 use weldspeak_protocol::{audio::SAMPLE_RATE, ClientFrame, ServerEvent};
 
+use crate::timings::{self, Stage};
 use crate::transport::{self, Outbound};
 use crate::AppState;
 
@@ -87,6 +88,7 @@ pub fn begin(app: &AppHandle) {
         }
         session.handle(SessionEvent::HotkeyDown)
     };
+    timings::start();
 
     // Retain speech from this instant, before anything slow runs. Pausing media
     // goes through the OS media session and can take long enough for the first
@@ -96,6 +98,9 @@ pub fn begin(app: &AppHandle) {
             capture.hold();
         }
     }
+    // A stream already known to be dead is rebuilt now, while the socket
+    // opens, rather than after a silent dictation.
+    crate::mic_watchdog::on_hotkey_down(app);
     crate::learn::invalidate();
     // Read what is around the cursor now, while the target field still has
     // focus and before the dictation changes it.
@@ -164,6 +169,7 @@ fn read_context(app: &AppHandle) -> Option<weldspeak_protocol::FieldContext> {
 pub fn end(app: &AppHandle, tail: Duration) {
     let generation = STOP_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     STOP_PENDING.store(true, Ordering::SeqCst);
+    timings::mark(timings::current(), Stage::Released);
 
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -223,6 +229,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                     .ok()
                     .and_then(|mut slot| slot.take());
                 send(app, Outbound::Control(ClientFrame::Stop { context }));
+                timings::mark(timings::current(), Stage::StopSent);
                 let _ = app.emit("weldspeak://thinking", ());
                 crate::overlay::appear_thinking(app);
             }
@@ -251,7 +258,7 @@ fn perform(app: &AppHandle, actions: Vec<Action>) {
                 let text = crate::learn::apply(&text, &corrections);
                 remember_transcript(app, &text);
                 crate::native_settings::on_history_changed(app, &text);
-                crate::inject_on_main_thread(app, text, preference);
+                crate::inject_on_main_thread(app, text, preference, Some(timings::current()));
 
                 // The injector reports completion by driving the machine on;
                 // without this the session would never return to idle.
@@ -287,13 +294,17 @@ fn open_socket(app: &AppHandle) {
         )
     };
 
-    let Some(access_token) = state.auth.lock().ok().and_then(|auth| {
-        auth.access_token(weldspeak_core::auth::now_secs())
-            .map(str::to_owned)
-    }) else {
+    // Nothing to renew and no session: say so now, before the pill settles in.
+    let signed_out = state
+        .auth
+        .lock()
+        .map(|auth| auth.tokens().is_none())
+        .unwrap_or(true)
+        && crate::auth::load_refresh_token().is_none();
+    if signed_out {
         fail(app, "Sign in to WeldSpeak before dictating.");
         return;
-    };
+    }
 
     let (outbound_tx, outbound_rx) = unbounded_channel();
     let (events_tx, mut events_rx) = unbounded_channel();
@@ -320,21 +331,40 @@ fn open_socket(app: &AppHandle) {
         retain: Some(keep_history),
     }));
 
+    // Events from this socket belong to this dictation's timings, even if
+    // they arrive after the next one has started.
+    let dictation = timings::current();
+
     let for_events = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events_rx.recv().await {
-            handle_server_event(&for_events, event);
+            handle_server_event(&for_events, event, dictation);
         }
     });
 
     let for_socket = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Usually instant: the keeper renews ahead of expiry. Right after
+        // launch, or after sleep, this waits for the renewal instead of
+        // failing; the microphone holds what is said meanwhile.
+        let access_token = match crate::auth::access(&for_socket).await {
+            crate::auth::Access::Token(token) => token,
+            crate::auth::Access::Offline => {
+                fail(&for_socket, "Can't reach WeldSpeak. Check your connection.");
+                return;
+            }
+            crate::auth::Access::SignedOut => {
+                fail(&for_socket, "Sign in to WeldSpeak before dictating.");
+                return;
+            }
+        };
         if let Err(error) = transport::run(
             &api_base,
             &access_token,
             org_id.as_deref(),
             outbound_rx,
             events_tx,
+            || timings::mark(dictation, Stage::Connected),
         )
         .await
         {
@@ -363,7 +393,7 @@ fn start_streaming(app: &AppHandle) {
     let _ = app.emit("weldspeak://listening", ());
 }
 
-fn handle_server_event(app: &AppHandle, event: ServerEvent) {
+fn handle_server_event(app: &AppHandle, event: ServerEvent, dictation: u64) {
     let actions = {
         let state = app.state::<AppState>();
         let Ok(mut session) = state.session.lock() else {
@@ -371,7 +401,13 @@ fn handle_server_event(app: &AppHandle, event: ServerEvent) {
         };
 
         match event {
-            ServerEvent::Ready { .. } => session.handle(SessionEvent::Ready),
+            ServerEvent::Ready { .. } => {
+                let actions = session.handle(SessionEvent::Ready);
+                if actions.contains(&Action::StartStreaming) {
+                    timings::mark(dictation, Stage::Ready);
+                }
+                actions
+            }
 
             ServerEvent::Partial { .. } => {
                 // Wispr-style: the pill is waveform only. Partials are never
@@ -381,7 +417,22 @@ fn handle_server_event(app: &AppHandle, event: ServerEvent) {
 
             ServerEvent::Transcript { .. } | ServerEvent::Pong => Vec::new(),
 
-            ServerEvent::Result { text, .. } => session.handle(SessionEvent::Result { text }),
+            ServerEvent::Result {
+                text,
+                timings: server,
+                ..
+            } => {
+                let actions = session.handle(SessionEvent::Result { text });
+                // Only a result that is going in counts; one dropped after a
+                // cancel, or an empty one, has no injection to time.
+                if actions
+                    .iter()
+                    .any(|action| matches!(action, Action::Inject { .. }))
+                {
+                    timings::result(dictation, server);
+                }
+                actions
+            }
 
             ServerEvent::Error { code, message, .. } => {
                 session.handle(SessionEvent::Failed { code, message })
@@ -412,6 +463,7 @@ fn teardown(app: &AppHandle) {
     if let Ok(capture) = state.capture.lock() {
         if let Some(capture) = capture.as_ref() {
             capture.disarm();
+            crate::mic_watchdog::after_take(capture);
         }
     }
 
@@ -441,6 +493,54 @@ fn remember_transcript(app: &AppHandle, text: &str) {
             let _ = settings.save(&path);
         }
     };
+}
+
+/// A rebuilt capture was installed while a dictation may be under way: bring
+/// its framer to where the session is, as `begin` and `start_streaming` would
+/// have done had it been there from the start.
+pub(crate) fn adopt_capture(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let phase = state
+        .session
+        .lock()
+        .map(|session| session.state().clone())
+        .unwrap_or_default();
+
+    let preroll = {
+        let Ok(capture) = state.capture.lock() else {
+            return;
+        };
+        let Some(capture) = capture.as_ref() else {
+            return;
+        };
+        match phase {
+            SessionState::Arming { .. } => {
+                capture.hold();
+                return;
+            }
+            // Past `ready` already: stream from here, starting with whatever
+            // the new device caught while it opened.
+            SessionState::Recording => capture.arm(),
+            _ => return,
+        }
+    };
+    for frame in preroll {
+        send(app, Outbound::Audio(frame));
+    }
+}
+
+/// End the dictation in progress with a message — there is no microphone to
+/// take it from. Nothing to do if it has already finished.
+pub(crate) fn abandon(app: &AppHandle, message: &str) {
+    let active = app
+        .state::<AppState>()
+        .session
+        .lock()
+        .map(|session| !session.is_idle())
+        .unwrap_or(false);
+    if active {
+        fail(app, message);
+    }
 }
 
 /// Drive the session into its failed state and tell the user.

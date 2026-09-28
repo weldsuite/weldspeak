@@ -18,9 +18,12 @@ import {
   buildCleanupPrompt,
   cleanupMaxTokens,
   judgeCleanup,
+  openRouterCleanupBody,
+  protectTerms,
   stripModelChatter,
   SYSTEM_PROMPT,
 } from "./cleanup-rules.js";
+import { isWorkersAiModel } from "./stt.js";
 
 export {
   appStyle,
@@ -29,6 +32,7 @@ export {
   fitToCursor,
   judgeCleanup,
   looksLikeAssistantReply,
+  protectTerms,
   stripModelChatter,
 } from "./cleanup-rules.js";
 
@@ -57,6 +61,8 @@ export interface CleanupResult {
   text: string;
   /** False when cleanup was skipped, failed, or missed its deadline. */
   formatted: boolean;
+  /** Why the raw transcript shipped instead, for the timings log. */
+  reason?: string;
 }
 
 export interface CleanupOptions {
@@ -101,6 +107,74 @@ function extractCleanupText(response: unknown): ModelOutput | null {
 }
 
 /**
+ * Cleanup model when `CLEANUP_MODEL` is on OpenRouter and OpenRouter fails.
+ * The same model, so the text reads the same whichever one answered.
+ */
+export const FALLBACK_CLEANUP_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+
+type Messages = Array<{ role: string; content: string }>;
+
+async function runOnWorkersAi(
+  env: Env,
+  model: string,
+  messages: Messages,
+  maxTokens: number,
+): Promise<ModelOutput | null> {
+  try {
+    const response = await env.AI.run(model as never, {
+      messages,
+      // Cleanup is a copy with corrections, not creative writing: greedy
+      // decoding keeps the model on the speaker's words.
+      temperature: 0,
+      max_tokens: maxTokens,
+      // Reasoning models default to thinking. That would eat the deadline and
+      // leak a trace into whatever the user was typing into.
+      chat_template_kwargs: { enable_thinking: false },
+    } as never);
+    return extractCleanupText(response);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same request through OpenRouter.
+ *
+ * Measured with scripts/bench-cleanup.ts, Gemma 4 26B there answered in a
+ * median 200 ms and 400 ms for a 200-word prompt; on Workers AI it took 860 ms
+ * and 5.5 s, and missed the deadline on long prompts.
+ */
+async function runOnOpenRouter(
+  env: Env,
+  messages: Messages,
+  maxTokens: number,
+  signal: AbortSignal,
+): Promise<ModelOutput | null> {
+  if (!env.OPENROUTER_API_KEY) return null;
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "X-Title": "WeldSpeak",
+      },
+      body: JSON.stringify(openRouterCleanupBody(env.CLEANUP_MODEL, messages, maxTokens)),
+      signal,
+    });
+    if (!response.ok) {
+      console.warn(
+        JSON.stringify({ msg: "cleanup model failed", status: response.status, detail: (await response.text()).slice(0, 200) }),
+      );
+      return null;
+    }
+    return extractCleanupText(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run the cleanup pass, falling back to `raw` on timeout or failure.
  *
  * Never throws: every failure mode degrades to the raw transcript, because
@@ -116,48 +190,48 @@ export async function cleanupTranscript(
   if (!trimmed) return { text: "", formatted: false };
 
   const timeoutMs = options.timeoutMs ?? cleanupDeadlineMs(trimmed);
+  const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs);
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const inference = (async (): Promise<ModelOutput | null> => {
-    try {
-      const response = (await env.AI.run(env.CLEANUP_MODEL as never, {
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: buildCleanupPrompt(trimmed, {
-              terms,
-              appName: options.appName,
-              field: options.field,
-            }),
-          },
-        ],
-        // Cleanup is a copy with corrections, not creative writing: greedy
-        // decoding keeps the model on the speaker's words.
-        temperature: 0,
-        max_tokens: cleanupMaxTokens(trimmed),
-        // Reasoning models default to thinking. That would eat the deadline and
-        // leak a trace into whatever the user was typing into.
-        chat_template_kwargs: { enable_thinking: false },
-      } as never));
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: buildCleanupPrompt(trimmed, {
+        terms,
+        appName: options.appName,
+        field: options.field,
+      }),
+    },
+  ];
+  const maxTokens = cleanupMaxTokens(trimmed);
 
-      return extractCleanupText(response);
-    } catch {
-      return null;
+  const inference = (async (): Promise<ModelOutput | null> => {
+    if (!isWorkersAiModel(env.CLEANUP_MODEL)) {
+      const output = await runOnOpenRouter(env, messages, maxTokens, abort.signal);
+      // A failed call leaves most of the deadline; the Workers AI copy of
+      // the model can still use it.
+      if (output || abort.signal.aborted) return output;
     }
+    const model = isWorkersAiModel(env.CLEANUP_MODEL) ? env.CLEANUP_MODEL : FALLBACK_CLEANUP_MODEL;
+    return runOnWorkersAi(env, model, messages, maxTokens);
   })();
 
   const output = await Promise.race([inference, timeout]);
   clearTimeout(timer);
-  if (output === null || output.truncated) return { text: trimmed, formatted: false };
+  abort.abort();
+  if (output === "timeout") return { text: trimmed, formatted: false, reason: "timeout" };
+  if (output === null) return { text: trimmed, formatted: false, reason: "no_output" };
+  if (output.truncated) return { text: trimmed, formatted: false, reason: "truncated" };
 
-  const cleaned = stripModelChatter(output.text);
-  if (!judgeCleanup(trimmed, cleaned, options.field).ok) {
-    return { text: trimmed, formatted: false };
-  }
+  const guarded = protectTerms(trimmed, stripModelChatter(output.text), terms);
+  if (guarded.lost.length > 0) return { text: trimmed, formatted: false, reason: "lost_term" };
 
-  return { text: cleaned, formatted: true };
+  const verdict = judgeCleanup(trimmed, guarded.text, options.field);
+  if (!verdict.ok) return { text: trimmed, formatted: false, reason: verdict.reason };
+
+  return { text: guarded.text, formatted: true };
 }

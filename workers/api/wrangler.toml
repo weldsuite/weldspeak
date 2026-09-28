@@ -49,12 +49,17 @@ new_sqlite_classes = ["DictationSession"]
 
 [vars]
 APP_URL = "https://weldspeak.weldsuite.org"
-CLEANUP_MODEL = "@cf/google/gemma-4-26b-a4b-it"
-# Streaming STT via Workers AI. Keep Nova-3 for hold-to-talk: lowest latency on
-# AA-WER Streaming among accurate options already wired here. Flux is faster but
-# higher WER; ElevenLabs Scribe is more accurate but is not a Workers AI model
-# and would need a separate upstream WebSocket path + billing.
-STT_MODEL = "@cf/deepgram/nova-3"
+# Cleanup runs Gemma 4 26B through OpenRouter, routed to the fastest provider:
+# a median 200 ms against 860 ms for the same model on Workers AI (see
+# scripts/bench-cleanup.ts). If OpenRouter fails, the Workers AI copy answers.
+# An "@cf/..." name here runs on Workers AI only.
+CLEANUP_MODEL = "google/gemma-4-26b-a4b-it"
+# Speech-to-text. MAI-Transcribe 2 through OpenRouter (batch, sent on release;
+# see src/stt.ts): 60 languages with detection and code switching, and keyword
+# biasing in every language. Needs the OPENROUTER_API_KEY secret; without it,
+# or when it fails, a dictation falls back to batch Nova-3 on Workers AI.
+# To roll back to streaming Nova-3, set this to "@cf/deepgram/nova-3".
+STT_MODEL = "microsoft/mai-transcribe-2"
 # Publishable: same Clerk application as WeldSuite. Encodes clerk.weldsuite.org.
 CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"
 
@@ -62,3 +67,9 @@ CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"
 #   CLERK_SECRET_KEY        WeldSuite Clerk secret (sk_live_...)
 #   CLERK_WEBHOOK_SECRET    Svix signing secret for the Clerk webhook
 #   TOKEN_SIGNING_KEY       Random 32+ byte secret used to sign WeldSpeak access tokens
+#   OPENROUTER_API_KEY      OpenRouter key for MAI-Transcribe (sk-or-...)
+
+# Keeps the per-dictation "dictation timings" log lines queryable in the
+# dashboard, so latency can be reviewed stage by stage after the fact.
+[observability]
+enabled = true

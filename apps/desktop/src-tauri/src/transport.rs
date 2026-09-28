@@ -23,13 +23,15 @@ pub enum Outbound {
 /// Open a dictation session and pump it until it ends.
 ///
 /// Returns once the socket closes. Server events are forwarded to `events`; the
-/// caller drives the state machine with them.
+/// caller drives the state machine with them. `on_connected` runs once the
+/// handshake completes, for the dictation's timings.
 pub async fn run(
     api_base: &str,
     access_token: &str,
     org_id: Option<&str>,
     mut outbound: UnboundedReceiver<Outbound>,
     events: UnboundedSender<ServerEvent>,
+    on_connected: impl FnOnce(),
 ) -> Result<()> {
     let url = url_for(api_base, org_id)?;
 
@@ -44,6 +46,7 @@ pub async fn run(
     );
 
     let (socket, _) = tokio_tungstenite::connect_async(request).await?;
+    on_connected();
     let (mut sink, mut stream) = socket.split();
 
     loop {

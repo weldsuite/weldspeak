@@ -12,7 +12,24 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use weldspeak_core::auth::Tokens;
+use tauri::{AppHandle, Emitter, Manager};
+use weldspeak_core::auth::{now_secs, Tokens};
+
+use crate::AppState;
+
+/// How long a refresh may take before it counts as unreachable. Callers wait
+/// on it — the Hub at launch, a dictation at hotkey-down — so a dead network
+/// must fail in seconds rather than hang.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Longest the keeper sleeps between checks. A laptop's timers may not count
+/// time spent asleep, so after waking it re-checks within minutes instead of
+/// trusting a 55-minute sleep that started yesterday.
+const KEEPER_MAX_SLEEP: Duration = Duration::from_secs(5 * 60);
+
+/// Retry spacing while the server is unreachable.
+const RETRY_MIN: Duration = Duration::from_secs(15);
+const RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 /// Keychain service name. Keyed per application, not per user: the OS scopes
 /// the entry to the logged-in account already.
@@ -147,6 +164,7 @@ pub async fn await_approval(
 pub async fn refresh(api_base: &str, refresh_token: &str) -> std::result::Result<Tokens, bool> {
     let response = reqwest::Client::new()
         .post(format!("{}/auth/refresh", api_base.trim_end_matches('/')))
+        .timeout(REFRESH_TIMEOUT)
         .json(&serde_json::json!({ "refreshToken": refresh_token }))
         .send()
         .await
@@ -164,6 +182,174 @@ pub async fn refresh(api_base: &str, refresh_token: &str) -> std::result::Result
         tokens.refresh_token,
         tokens.expires_in,
     ))
+}
+
+/// What a caller can do with the session right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// A usable access token.
+    Token(String),
+    /// Credentials are saved but the server could not be reached. The user is
+    /// still signed in; asking them to sign in again would be wrong.
+    Offline,
+    /// No credentials, or the server refused them.
+    SignedOut,
+}
+
+/// A usable access token, refreshing first when one is due.
+///
+/// Everything that talks to the API goes through here. Only the refresh token
+/// survives a restart, so at launch there is no access token until a refresh
+/// completes; reading the store directly in that window is what made the Hub
+/// show "not signed in" for a few seconds. Waiting here instead also covers
+/// expiry: an access token lives an hour, and a long-running app renews it on
+/// demand if the keeper has not already.
+pub async fn access(app: &AppHandle) -> Access {
+    if let Some(token) = fresh_token(app) {
+        return Access::Token(token);
+    }
+
+    // Refresh tokens are single-use: two refreshes at once would present the
+    // same one twice, and the server treats reuse as theft and revokes the
+    // device. Whoever waited here finds the other's result below.
+    let state = app.state::<AppState>();
+    let _guard = state.refresh_lock.lock().await;
+    if let Some(token) = fresh_token(app) {
+        return Access::Token(token);
+    }
+    refresh_session(app).await
+}
+
+/// The stored access token, unless it is due for renewal.
+fn fresh_token(app: &AppHandle) -> Option<String> {
+    let state = app.state::<AppState>();
+    let store = state.auth.lock().ok()?;
+    store
+        .tokens()
+        .filter(|tokens| !tokens.needs_refresh(now_secs()))
+        .map(|tokens| tokens.access_token.clone())
+}
+
+/// The stored access token if it still works, due for renewal or not.
+fn valid_token(app: &AppHandle) -> Option<String> {
+    let state = app.state::<AppState>();
+    let store = state.auth.lock().ok()?;
+    store.access_token(now_secs()).map(str::to_owned)
+}
+
+/// Exchange the saved refresh token. Call with `refresh_lock` held.
+async fn refresh_session(app: &AppHandle) -> Access {
+    let Some(refresh_token) = load_refresh_token() else {
+        // Signed in this run but the keychain write failed: the token in
+        // memory is all there is, and it is good until it expires.
+        return valid_token(app).map_or(Access::SignedOut, Access::Token);
+    };
+
+    let state = app.state::<AppState>();
+    let Ok(api_base) = state
+        .settings
+        .lock()
+        .map(|settings| settings.api_base.clone())
+    else {
+        return Access::Offline;
+    };
+    let restoring = state
+        .auth
+        .lock()
+        .map(|store| store.tokens().is_none())
+        .unwrap_or(false);
+
+    match refresh(&api_base, &refresh_token).await {
+        Ok(tokens) => {
+            // Refresh tokens are single-use. If we fail to persist the
+            // replacement, the next launch will present the old one and the
+            // server will revoke the device.
+            if let Err(error) = save_refresh_token(&tokens.refresh_token) {
+                tracing::error!(?error, "could not persist credentials after refresh");
+            }
+            let token = tokens.access_token.clone();
+            if let Ok(mut store) = state.auth.lock() {
+                store.accept(tokens);
+            }
+
+            if restoring {
+                // The first refresh of a launch is the session coming back.
+                // The Hub asks for its status again; no "Signed in" toast,
+                // since the user did nothing.
+                let _ = app.emit("weldspeak://session-changed", ());
+                crate::native_settings::on_signed_in();
+            }
+            Access::Token(token)
+        }
+        Err(fatal) => {
+            // Fatal means the server refused: revoked, reused, or the user was
+            // removed from their organization. Anything else is a network
+            // problem worth retrying rather than signing out over.
+            if let Ok(mut store) = state.auth.lock() {
+                store.refresh_failed(now_secs(), fatal);
+            }
+            if fatal {
+                tracing::warn!("the server refused the saved session; signing out");
+                let _ = clear_refresh_token();
+                let _ = app.emit("weldspeak://session-changed", ());
+                return Access::SignedOut;
+            }
+            tracing::warn!("could not reach the server to renew the session");
+            valid_token(app).map_or(Access::Offline, Access::Token)
+        }
+    }
+}
+
+/// Keep the session alive in the background.
+///
+/// Restores the saved session at launch, then renews the access token a few
+/// minutes before it expires, so the hotkey never waits on a refresh. When
+/// the server is unreachable it retries with backoff instead of signing out.
+pub fn spawn_keeper(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut backoff = RETRY_MIN;
+        let mut had_token = false;
+        loop {
+            let access = access(&app).await;
+
+            // Words learned while signed out or offline wait for a session;
+            // push them once one is back (launch, sign-in, reconnect).
+            let has_token = matches!(access, Access::Token(_));
+            if has_token && !had_token {
+                crate::learn::flush_to_dictionary(&app).await;
+            }
+            had_token = has_token;
+
+            let due_in = {
+                let state = app.state::<AppState>();
+                let store = state.auth.lock();
+                store.ok().and_then(|store| {
+                    store
+                        .tokens()
+                        .map(|tokens| tokens.refresh_delay(now_secs()))
+                })
+            };
+
+            let wait = match (access, due_in) {
+                // Renewed, or not yet due: sleep until it is.
+                (Access::Token(_), Some(due)) if !due.is_zero() => {
+                    backoff = RETRY_MIN;
+                    due
+                }
+                // Signed out: nothing to renew. Sign-in stores fresh tokens,
+                // which the next check picks up.
+                (Access::SignedOut, _) => KEEPER_MAX_SLEEP,
+                // Offline, or a renewal that failed while the old token still
+                // works: try again soon, backing off.
+                _ => {
+                    let wait = backoff;
+                    backoff = (backoff * 2).min(RETRY_MAX);
+                    wait
+                }
+            };
+            tokio::time::sleep(wait.min(KEEPER_MAX_SLEEP)).await;
+        }
+    });
 }
 
 /// Store the refresh token in the OS keychain.

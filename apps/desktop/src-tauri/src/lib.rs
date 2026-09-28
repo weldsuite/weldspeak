@@ -20,10 +20,12 @@ pub mod hotkey;
 pub mod inject;
 pub mod learn;
 pub mod media;
+pub mod mic_watchdog;
 pub mod native_settings;
 pub mod overlay;
 pub mod settings;
 pub mod snippets;
+pub mod timings;
 pub mod transport;
 pub mod updater;
 
@@ -63,6 +65,9 @@ pub struct AppState {
     pub mic_dirty: AtomicBool,
     /// Cursor context read at hotkey-down, waiting to ride on `stop`.
     pub field_context: Mutex<Option<weldspeak_protocol::FieldContext>>,
+    /// Held for the length of a token refresh, so only one runs at a time
+    /// (see `auth::access`). Async, because it is held across the request.
+    pub refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for AppState {
@@ -79,6 +84,7 @@ impl Default for AppState {
             media: Mutex::new(media::MediaPause::default()),
             mic_dirty: AtomicBool::new(false),
             field_context: Mutex::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -90,10 +96,15 @@ impl Default for AppState {
 /// worker thread. That is the documented cause of the crash Tauri apps hit when
 /// they synthesise input from a background task, and running the injection here
 /// is what avoids it.
+///
+/// `dictation` is the dictation's timing generation, when this text is one
+/// being dictated rather than a Paste last, so its timings can be logged once
+/// the text is in.
 pub fn inject_on_main_thread(
     app: &AppHandle,
     text: String,
     preference: weldspeak_core::inject::Preference,
+    dictation: Option<u64>,
 ) {
     // The closure needs an owned handle of its own; `app` stays borrowed as the
     // receiver of run_on_main_thread.
@@ -103,12 +114,18 @@ pub fn inject_on_main_thread(
         match inject::deliver(&text, preference) {
             Ok(inject::Outcome::Injected) => {
                 tracing::debug!(chars = text.chars().count(), "injected");
+                if let Some(generation) = dictation {
+                    timings::injected(generation);
+                }
                 crate::learn::after_inject(&for_closure, text);
             }
             Ok(inject::Outcome::ClipboardOnly { reason }) => {
                 // Not an error: on a managed machine Accessibility may simply be
                 // unavailable. The text is on the clipboard and the user is told.
                 tracing::info!(%reason, "injection unavailable; text left on the clipboard");
+                if let Some(generation) = dictation {
+                    timings::injected(generation);
+                }
                 notify(&for_closure, &reason);
                 crate::learn::after_inject(&for_closure, text);
             }
@@ -196,7 +213,8 @@ pub fn run() {
                     settings::Settings::load(&settings_path);
             }
 
-            restore_session(&handle);
+            // Restores the saved session, then keeps the access token renewed.
+            auth::spawn_keeper(handle.clone());
             build_tray(&handle)?;
 
             // The microphone opens now and stays open. That is what makes the
@@ -211,6 +229,9 @@ pub fn run() {
             }
             dictation::spawn_audio_pump(handle.clone(), frames_rx);
             reopen_microphone(&handle);
+            // Nothing else ever reopens a stream that dies — an unplugged
+            // headset, a dropped Bluetooth link — so something has to watch.
+            mic_watchdog::spawn(handle.clone());
 
             overlay::prepare(&handle)?;
             hotkey::install(&handle);
@@ -244,67 +265,6 @@ pub fn run() {
                 }
             }
         });
-}
-
-/// Restore credentials saved by a previous run.
-///
-/// Only the refresh token is persisted; the access token is short-lived and
-/// cheap to re-obtain, so writing it to disk would add exposure for no benefit.
-fn restore_session(app: &AppHandle) {
-    let Some(refresh_token) = auth::load_refresh_token() else {
-        return;
-    };
-
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let api_base = {
-            let state = app.state::<AppState>();
-            let Ok(settings) = state.settings.lock() else {
-                return;
-            };
-            settings.api_base.clone()
-        };
-
-        match auth::refresh(&api_base, &refresh_token).await {
-            Ok(tokens) => {
-                // Refresh tokens are single-use. If we fail to persist the
-                // replacement, the next launch will present the old one and
-                // the server will revoke the device.
-                if let Err(error) = auth::save_refresh_token(&tokens.refresh_token) {
-                    tracing::error!(?error, "could not persist credentials after restore");
-                }
-
-                let state = app.state::<AppState>();
-                let mut store = state.auth.lock().expect("auth store poisoned");
-                store.accept(tokens);
-                drop(store);
-
-                // Settings mounts before restore finishes and would stay on
-                // the sign-in panel without this — same event as begin_sign_in.
-                use tauri::Emitter;
-                let _ = app.emit("weldspeak://signed-in", ());
-                crate::native_settings::on_signed_in();
-
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    crate::learn::flush_to_dictionary(&app).await;
-                });
-            }
-            Err(fatal) => {
-                // Fatal means the server refused: revoked, reused, or the user
-                // was removed from their organization. Anything else is a
-                // network problem worth retrying rather than signing out over.
-                {
-                    let state = app.state::<AppState>();
-                    let mut store = state.auth.lock().expect("auth store poisoned");
-                    store.refresh_failed(weldspeak_core::auth::now_secs(), fatal);
-                }
-                if fatal {
-                    let _ = auth::clear_refresh_token();
-                }
-            }
-        }
-    });
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -368,7 +328,8 @@ fn show_settings(app: &AppHandle) {
 ///
 /// Drops the old stream first so WASAPI releases the device, then opens the
 /// saved name (or the system default). Skipped while a dictation is in
-/// progress so arming is not lost mid-sentence.
+/// progress so arming is not lost mid-sentence. Also how the watchdog goes
+/// back to the saved microphone after failing over to a stand-in.
 pub(crate) fn reopen_microphone(app: &AppHandle) {
     let state = app.state::<AppState>();
     let idle = state
@@ -393,8 +354,9 @@ pub(crate) fn reopen_microphone(app: &AppHandle) {
     };
 
     *state.capture.lock().expect("capture poisoned") = None;
-    match audio::Capture::start(frames, preferred) {
+    match audio::Capture::start(frames, preferred.clone()) {
         Ok(capture) => {
+            mic_watchdog::on_reopened(&capture, preferred.as_deref());
             *state.capture.lock().expect("capture poisoned") = Some(capture);
         }
         // A refused or missing microphone must not stop the app: the user

@@ -20,6 +20,7 @@ import {
   buildCleanupPrompt,
   cleanupMaxTokens,
   judgeCleanup,
+  openRouterCleanupBody,
   stripModelChatter,
   SYSTEM_PROMPT,
 } from "../src/cleanup-rules.ts";
@@ -181,6 +182,12 @@ function authToken(): string {
   return match[1]!;
 }
 
+function openRouterKey(): string {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("Set OPENROUTER_API_KEY to benchmark OpenRouter models");
+  return key;
+}
+
 interface Extracted {
   text: string | null;
   finish?: unknown;
@@ -243,26 +250,38 @@ async function runOnce(token: string, model: string, c: Case): Promise<RunResult
   const timer = setTimeout(() => controller.abort(), 30_000);
   const t0 = performance.now();
   try {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${model}`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      },
-    );
+    // Workers AI models are "@cf/..."; anything else is an OpenRouter slug,
+    // sent with the same messages through src/format.ts's request shape.
+    const openRouter = !model.startsWith("@cf/");
+    const res = openRouter
+      ? await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openRouterKey()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(openRouterCleanupBody(model, body.messages, body.max_tokens)),
+          signal: controller.signal,
+        })
+      : await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/ai/run/${model}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
     const ms = performance.now() - t0;
     const json = (await res.json()) as {
       success?: boolean;
       errors?: Array<{ message?: string }>;
+      error?: { message?: string };
       result?: unknown;
     };
-    if (!res.ok || json.success === false) {
-      const error = json.errors?.map((e) => e.message).join("; ") || `HTTP ${res.status}`;
+    if (!res.ok || json.success === false || json.error) {
+      const error =
+        json.error?.message || json.errors?.map((e) => e.message).join("; ") || `HTTP ${res.status}`;
       return { ms, text: "", shipped: false, why: "error", quality: 0, error };
     }
-    const out = extract(json.result);
+    const out = extract(openRouter ? json : json.result);
     const text = stripModelChatter(out.text ?? "");
     const verdict = judgeCleanup(c.raw.trim(), text, c.field);
     const late = ms > deadlineMs(c.raw);

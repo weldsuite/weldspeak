@@ -7,7 +7,7 @@
  * damage. Every one of those degrades to the raw transcript instead.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DictionaryTerm } from "@weldspeak/protocol";
 import {
   appStyle,
@@ -18,8 +18,10 @@ import {
   fitToCursor,
   judgeCleanup,
   looksLikeAssistantReply,
+  protectTerms,
   stripModelChatter,
   CLEANUP_TIMEOUT_MS,
+  FALLBACK_CLEANUP_MODEL,
   MAX_CLEANUP_TIMEOUT_MS,
 } from "../src/format.js";
 import type { Env } from "../src/env.js";
@@ -248,7 +250,7 @@ describe("cleanup", () => {
     const result = await cleanupTranscript(env, "raw words here", [], { timeoutMs: 50 });
     const elapsed = Date.now() - started;
 
-    expect(result).toEqual({ text: "raw words here", formatted: false });
+    expect(result).toEqual({ text: "raw words here", formatted: false, reason: "timeout" });
     // The point of the deadline is that the user is not left waiting.
     expect(elapsed).toBeLessThan(1_000);
   });
@@ -261,13 +263,14 @@ describe("cleanup", () => {
     expect(await cleanupTranscript(env, "raw words here", [])).toEqual({
       text: "raw words here",
       formatted: false,
+      reason: "no_output",
     });
   });
 
   it("ships the raw transcript when the model returns nothing usable", async () => {
     for (const bad of ["", "   ", "```\n\n```"]) {
       const result = await cleanupTranscript(respondWith(bad), "raw words here", []);
-      expect(result).toEqual({ text: "raw words here", formatted: false });
+      expect(result).toEqual({ text: "raw words here", formatted: false, reason: "empty" });
     }
   });
 
@@ -277,7 +280,7 @@ describe("cleanup", () => {
     const essay = "Well, that depends on several factors. ".repeat(50);
     const result = await cleanupTranscript(respondWith(essay), "what do you think", []);
 
-    expect(result).toEqual({ text: "what do you think", formatted: false });
+    expect(result).toEqual({ text: "what do you think", formatted: false, reason: "too_long" });
   });
 
   it("ships the raw transcript when the model answers a dictated question", async () => {
@@ -287,7 +290,7 @@ describe("cleanup", () => {
       [],
     );
 
-    expect(result).toEqual({ text: "what time is the meeting", formatted: false });
+    expect(result).toMatchObject({ text: "what time is the meeting", formatted: false });
   });
 
   it("ships the raw transcript when the model asks for dictation instead of copying it", async () => {
@@ -299,7 +302,7 @@ describe("cleanup", () => {
       [],
     );
 
-    expect(result).toEqual({ text: "hello there", formatted: false });
+    expect(result).toMatchObject({ text: "hello there", formatted: false });
   });
 
   it("handles empty input without calling the model", async () => {
@@ -319,7 +322,7 @@ describe("cleanup", () => {
     }));
     const result = await cleanupTranscript(env, "um the weld looks uh good", []);
 
-    expect(result).toEqual({ text: "um the weld looks uh good", formatted: false });
+    expect(result).toEqual({ text: "um the weld looks uh good", formatted: false, reason: "truncated" });
   });
 
   it("ships the raw transcript when the model cut a long prompt short", async () => {
@@ -331,7 +334,7 @@ describe("cleanup", () => {
       [],
     );
 
-    expect(result).toEqual({ text: raw, formatted: false });
+    expect(result).toEqual({ text: raw, formatted: false, reason: "dropped_words" });
   });
 
   it("defaults to a deadline the cleanup model can actually meet", () => {
@@ -465,5 +468,107 @@ describe("fitting text to the cursor", () => {
   it("leaves text alone without context", () => {
     expect(fitToCursor("Hello.", undefined)).toBe("Hello.");
     expect(fitToCursor("Hello.", {})).toBe("Hello.");
+  });
+});
+
+describe("protecting dictionary spellings", () => {
+  it("puts back a term the cleanup respaced or recased", () => {
+    const result = protectTerms(
+      "ship weldsuite today",
+      "Ship Weld Suite today, and weld-suite tomorrow.",
+      [term("WeldSuite")],
+    );
+    expect(result).toEqual({ text: "Ship WeldSuite today, and WeldSuite tomorrow.", lost: [] });
+  });
+
+  it("restores the casing of acronyms and names with digits", () => {
+    const result = protectTerms("tig on inconel 625", "Tig on Inconel-625.", [
+      term("TIG"),
+      term("Inconel 625"),
+    ]);
+    expect(result.text).toBe("TIG on Inconel 625.");
+  });
+
+  it("reports a term the cleanup replaced", () => {
+    const result = protectTerms("open WeldSuite", "Open Weld Suit.", [term("WeldSuite")]);
+    expect(result.lost).toEqual(["WeldSuite"]);
+  });
+
+  it("leaves ordinary-word terms to the model", () => {
+    // "Will" the name must not capitalise every "will", nor count as lost
+    // when the recognizer only heard the verb.
+    const terms = [term("Will")];
+    expect(protectTerms("i will go", "I'll go.", terms)).toEqual({ text: "I'll go.", lost: [] });
+    expect(protectTerms("ask Will if he will", "Ask Will if he will.", terms).text).toBe(
+      "Ask Will if he will.",
+    );
+  });
+
+  it("ignores terms that were not said", () => {
+    expect(protectTerms("hello", "Hello.", [term("WeldSuite")])).toEqual({ text: "Hello.", lost: [] });
+  });
+
+  it("ships the raw transcript when cleanup drops a dictionary term", async () => {
+    const env = respondWith("Deploy Weldsweet to production.");
+    const result = await cleanupTranscript(env, "deploy WeldSuite to production", [term("WeldSuite")]);
+    expect(result).toEqual({ text: "deploy WeldSuite to production", formatted: false, reason: "lost_term" });
+  });
+
+  it("fixes the spelling instead of rejecting a good cleanup", async () => {
+    const env = respondWith("Deploy Weld Suite to production.");
+    const result = await cleanupTranscript(env, "um deploy weldsuite to production", [term("WeldSuite")]);
+    expect(result).toEqual({ text: "Deploy WeldSuite to production.", formatted: true });
+  });
+});
+
+describe("cleanup through OpenRouter", () => {
+  /** An Env whose cleanup model lives on OpenRouter, with a scripted Workers AI fallback. */
+  function openRouterEnv(fallback: (model: string) => Promise<unknown>, key: string | undefined = "sk-or-test"): Env {
+    return {
+      CLEANUP_MODEL: "google/gemma-4-26b-a4b-it",
+      OPENROUTER_API_KEY: key,
+      AI: { run: (model: string) => fallback(model) },
+    } as unknown as Env;
+  }
+  const completion = (content: string) => Response.json({ choices: [{ message: { content }, finish_reason: "stop" }] });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks OpenRouter for the fastest provider and no reasoning", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(completion("The weld looks good."));
+    const env = openRouterEnv(async () => ({ response: "unused" }));
+
+    const result = await cleanupTranscript(env, "um the weld looks uh good", []);
+
+    expect(result).toEqual({ text: "The weld looks good.", formatted: true });
+    const body = JSON.parse(fetch.mock.calls[0]![1]!.body as string);
+    expect(body).toMatchObject({
+      model: "google/gemma-4-26b-a4b-it",
+      temperature: 0,
+      reasoning: { enabled: false },
+      provider: { sort: "latency" },
+    });
+  });
+
+  it("falls back to the same model on Workers AI when OpenRouter fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("overloaded", { status: 503 }));
+    let usedModel = "";
+    const env = openRouterEnv(async (model) => {
+      usedModel = model;
+      return { response: "The weld looks good." };
+    });
+
+    const result = await cleanupTranscript(env, "um the weld looks uh good", []);
+
+    expect(result).toEqual({ text: "The weld looks good.", formatted: true });
+    expect(usedModel).toBe(FALLBACK_CLEANUP_MODEL);
+  });
+
+  it("uses Workers AI without calling out when no key is set", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const env = openRouterEnv(async () => ({ response: "The weld looks good." }), "");
+
+    expect(await cleanupTranscript(env, "um the weld looks uh good", [])).toMatchObject({ formatted: true });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -368,3 +368,92 @@ export function judgeCleanup(raw: string, cleaned: string, field?: FieldContext)
 
   return { ok: true };
 }
+
+/**
+ * The chat request for a cleanup model on OpenRouter.
+ *
+ * Cleanup is on the critical path — the user is waiting with the cursor
+ * blinking — so the request asks for speed over everything: the provider that
+ * answers fastest, and no reasoning pass, which would spend the deadline
+ * thinking about a task that is a careful copy.
+ */
+export function openRouterCleanupBody(
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  maxTokens: number,
+): Record<string, unknown> {
+  return {
+    model,
+    messages,
+    temperature: 0,
+    max_tokens: maxTokens,
+    reasoning: { enabled: false },
+    provider: { sort: "latency" },
+  };
+}
+
+/**
+ * Match a dictionary term in any spacing, punctuation, or case: "WeldSuite"
+ * also finds "Weld Suite", "weld-suite", and "WELDSUITE". Null for a term too
+ * short to match safely.
+ */
+function termPattern(term: string, flags: string): RegExp | null {
+  const chars = Array.from(term).filter((ch) => /[\p{L}\p{N}]/u.test(ch));
+  if (chars.length < 2) return null;
+  return new RegExp(`(?<![\\p{L}\\p{N}])${chars.join("[\\s\\-_.]?")}(?![\\p{L}\\p{N}])`, `${flags}u`);
+}
+
+/**
+ * Whether a term's casing is part of its spelling. "WeldSuite", "TIG",
+ * "Inconel 625", and "index.ts" are; "Will" or "Mark" are not, because as
+ * ordinary words they are lowercase mid-sentence, and forcing them would
+ * capitalise every "will" in the text.
+ */
+function casingIsDistinctive(term: string): boolean {
+  return /.\p{Lu}/u.test(term) || /\p{N}/u.test(term) || /[^\p{L}\p{N}\s]/u.test(term);
+}
+
+/**
+ * Hold dictionary spellings through cleanup.
+ *
+ * The cleanup model is told to keep product names, but it also fixes "obvious
+ * speech-recognition mistakes", and a made-up brand name looks exactly like
+ * one. For every term the recognizer heard, a respaced or recased copy in the
+ * cleanup is put back to the dictionary spelling. A term that vanished
+ * entirely is reported in `lost`, and the caller ships the raw transcript: the
+ * model replaced a word the speaker had taught it, which is the damage this
+ * guard exists to stop. It also rejects a self-correction away from a term
+ * ("WeldDesk, no, WeldSuite"), which costs a few keystrokes rather than a name.
+ *
+ * A term whose casing is not distinctive counts as heard only when the
+ * recognizer wrote it with the dictionary's capitals: "Will" the name, not
+ * every "will" in the sentence.
+ */
+export function protectTerms(
+  raw: string,
+  cleaned: string,
+  terms: DictionaryTerm[],
+): { text: string; lost: string[] } {
+  let text = cleaned;
+  const lost: string[] = [];
+
+  for (const { term: spelling } of terms) {
+    const term = spelling.trim();
+    const anyCase = termPattern(term, "i");
+    if (!anyCase) continue;
+    const distinctive = casingIsDistinctive(term);
+    const heard = distinctive ? anyCase : termPattern(term, "")!;
+    if (!heard.test(raw)) continue;
+    if (!anyCase.test(text)) {
+      lost.push(term);
+      continue;
+    }
+
+    text = text.replace(termPattern(term, "gi")!, (found) => {
+      const recasedOnly = found.toLowerCase() === term.toLowerCase();
+      return found === term || (recasedOnly && !distinctive) ? found : term;
+    });
+  }
+
+  return { text, lost };
+}

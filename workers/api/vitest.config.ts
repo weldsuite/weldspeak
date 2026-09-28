@@ -20,7 +20,7 @@ export default defineConfig({
           NODE_ENV: "test",
           APP_URL: "http://localhost:5173",
           CLEANUP_MODEL: "@cf/google/gemma-4-26b-a4b-it",
-          STT_MODEL: "@cf/deepgram/nova-3",
+          STT_MODEL: "microsoft/mai-transcribe-2",
           CLERK_SECRET_KEY: "sk_test_fake",
           CLERK_PUBLISHABLE_KEY: "pk_test_fake",
           CLERK_WEBHOOK_SECRET: "whsec_ZmFrZXNlY3JldGZha2VzZWNyZXRmYWtl",

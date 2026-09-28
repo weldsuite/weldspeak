@@ -9,14 +9,20 @@
 //! otherwise sit at the front of every dictation — on macOS, opening an input
 //! device can take a couple of hundred milliseconds, which is most of the
 //! latency budget spent before a word is captured.
+//!
+//! The flip side is that a stream which dies stays dead: nothing reopens it on
+//! the next dictation. So each capture reports enough about itself — errors
+//! from the device, readings still arriving, a take of pure digital silence —
+//! for `mic_watchdog` to notice and rebuild it.
 
 use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream, StreamConfig};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use weldspeak_core::{Frame, Framer, Resampler};
 use weldspeak_protocol::audio::SAMPLE_RATE;
 
@@ -50,11 +56,35 @@ pub fn list_input_devices() -> Vec<Microphone> {
     listed
 }
 
-/// Resolve a saved device name, falling back to the system default if it is
-/// missing, empty, or the headset has been unplugged.
-fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
+/// The system default input's name and every attached input's name, for
+/// choosing where to fail over to.
+pub fn input_device_names() -> (Option<String>, Vec<String>) {
+    let listed = list_input_devices();
+    let default = listed
+        .iter()
+        .find(|mic| mic.is_default)
+        .map(|mic| mic.name.clone());
+    (default, listed.into_iter().map(|mic| mic.name).collect())
+}
+
+/// Which device [`Capture`] should open.
+enum Pick {
+    /// A saved name, falling back to the system default if it is missing,
+    /// empty, or the headset has been unplugged.
+    Preferred(Option<String>),
+    /// Exactly this device, or fail. Recovery walks its own list of
+    /// candidates and must know when one is gone rather than silently land
+    /// on the default twice.
+    Exact(String),
+}
+
+fn pick_input_device(pick: &Pick) -> Result<cpal::Device> {
     let host = cpal::default_host();
-    if let Some(name) = preferred.filter(|name| !name.is_empty()) {
+    let (name, exact) = match pick {
+        Pick::Preferred(name) => (name.as_deref().filter(|name| !name.is_empty()), false),
+        Pick::Exact(name) => (Some(name.as_str()), true),
+    };
+    if let Some(name) = name {
         if let Ok(devices) = host.input_devices() {
             for device in devices {
                 if device.name().ok().as_deref() == Some(name) {
@@ -62,10 +92,27 @@ fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
                 }
             }
         }
+        if exact {
+            return Err(anyhow!("microphone {name} is not attached"));
+        }
         tracing::warn!(name, "saved microphone not found; using system default");
     }
     host.default_input_device()
         .ok_or_else(|| anyhow!("no microphone available"))
+}
+
+/// Tells captures apart, so the watchdog can see that the stream it has been
+/// judging was replaced.
+static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// What the audio callbacks report about the stream, besides the level.
+#[derive(Default)]
+struct Signals {
+    /// The device reported an error. Once a stream has failed, cpal does not
+    /// recover it; only a rebuild does.
+    errored: AtomicBool,
+    /// A non-zero sample arrived since the last [`Capture::hold`].
+    heard: AtomicBool,
 }
 
 /// A running capture, conditioning device audio into wire-ready frames.
@@ -77,8 +124,13 @@ fn pick_input_device(preferred: Option<&str>) -> Result<cpal::Device> {
 /// shutdown signal. Dropping the handle closes the channel, which ends the
 /// thread, which drops the stream.
 pub struct Capture {
+    id: u64,
+    device: String,
     shared: Arc<Mutex<Pipeline>>,
     level: Arc<AtomicU64>,
+    signals: Arc<Signals>,
+    /// Meter sequence at the last hold, to measure how much audio a take had.
+    held_seq: AtomicU32,
     shutdown: Option<Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -155,20 +207,32 @@ impl Capture {
     /// `frames` only while armed; before that they feed the pre-roll buffer
     /// and are discarded as they age out.
     pub fn start(frames: Sender<Frame>, preferred: Option<String>) -> Result<Self> {
+        Self::launch(frames, Pick::Preferred(preferred))
+    }
+
+    /// Open exactly the input device called `name`, failing if it is not
+    /// attached. Used by recovery, which chooses its own fallbacks.
+    pub fn start_exact(frames: Sender<Frame>, name: String) -> Result<Self> {
+        Self::launch(frames, Pick::Exact(name))
+    }
+
+    fn launch(frames: Sender<Frame>, pick: Pick) -> Result<Self> {
         let (shutdown, shutdown_rx) = channel::<()>();
         // The audio thread reports whether the device opened, so a missing or
         // refused microphone surfaces here rather than as silence later.
-        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, Arc<AtomicU64>)>>();
+        let (ready, ready_rx) = channel::<Result<(Arc<Mutex<Pipeline>>, String)>>();
         // Seq 0 at -120 dBFS reads as "no audio yet" rather than full scale.
         let level = Arc::new(AtomicU64::new(pack_level(0, -120.0)));
         let level_for_thread = Arc::clone(&level);
+        let signals = Arc::new(Signals::default());
+        let signals_for_thread = Arc::clone(&signals);
 
         let thread = std::thread::Builder::new()
             .name("weldspeak-audio".into())
             .spawn(move || {
-                let stream = match Self::open(frames, level_for_thread, preferred.as_deref()) {
-                    Ok((stream, shared, level)) => {
-                        let _ = ready.send(Ok((shared, level)));
+                let stream = match Self::open(frames, level_for_thread, signals_for_thread, &pick) {
+                    Ok((stream, shared, device)) => {
+                        let _ = ready.send(Ok((shared, device)));
                         stream
                     }
                     Err(error) => {
@@ -184,9 +248,13 @@ impl Capture {
             })?;
 
         match ready_rx.recv()? {
-            Ok((shared, _thread_level)) => Ok(Self {
+            Ok((shared, device)) => Ok(Self {
+                id: NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed),
+                device,
                 shared,
                 level,
+                signals,
+                held_seq: AtomicU32::new(0),
                 shutdown: Some(shutdown),
                 thread: Some(thread),
             }),
@@ -204,13 +272,48 @@ impl Capture {
         unpack_level(self.level.load(Ordering::Relaxed))
     }
 
+    /// Distinguishes this capture from the one before and after it.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The name of the device actually opened — after any fallback to the
+    /// system default.
+    pub fn device_name(&self) -> &str {
+        &self.device
+    }
+
+    /// The device has reported an error. cpal does not revive a failed
+    /// stream, so this stays set until the capture is replaced.
+    pub fn errored(&self) -> bool {
+        self.signals.errored.load(Ordering::Relaxed)
+    }
+
+    /// A non-zero sample has arrived since the last [`Self::hold`].
+    pub fn heard_signal(&self) -> bool {
+        self.signals.heard.load(Ordering::Relaxed)
+    }
+
+    /// Whether the take since the last [`Self::hold`] was long enough to judge
+    /// and had not one non-zero sample in it.
+    pub fn take_was_digitally_silent(&self) -> bool {
+        let chunks = self
+            .latest_chunk_db()
+            .0
+            .wrapping_sub(self.held_seq.load(Ordering::Relaxed));
+        let audio = Duration::from_millis(METER_CHUNK_MS as u64) * chunks;
+        weldspeak_core::mic::is_suspect_silence(audio, self.heard_signal())
+    }
+
     /// Open the chosen input device. Runs on the audio thread.
     fn open(
         frames: Sender<Frame>,
         level: Arc<AtomicU64>,
-        preferred: Option<&str>,
-    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, Arc<AtomicU64>)> {
-        let device = pick_input_device(preferred)?;
+        signals: Arc<Signals>,
+        pick: &Pick,
+    ) -> Result<(Stream, Arc<Mutex<Pipeline>>, String)> {
+        let device = pick_input_device(pick)?;
+        let name = device.name().unwrap_or_else(|_| "unknown".into());
 
         let mut supported = device.default_input_config()?;
         // Prefer 48 kHz (or 44.1) when the device offers it — more headroom for
@@ -237,7 +340,7 @@ impl Capture {
         let config: StreamConfig = supported.into();
 
         tracing::info!(
-            device = device.name().unwrap_or_else(|_| "unknown".into()),
+            device = %name,
             rate = config.sample_rate.0,
             channels = config.channels,
             "opening microphone"
@@ -254,16 +357,21 @@ impl Capture {
             &config,
             sample_format,
             shared.clone(),
-            Arc::clone(&level),
+            Taps { level, signals },
             frames,
         )?;
         stream.play()?;
 
-        Ok((stream, shared, level))
+        Ok((stream, shared, name))
     }
 
     /// Begin retaining frames until [`Self::arm`] (hotkey-down).
+    ///
+    /// Also starts a fresh take for [`Self::take_was_digitally_silent`].
     pub fn hold(&self) {
+        self.signals.heard.store(false, Ordering::Relaxed);
+        self.held_seq
+            .store(self.latest_chunk_db().0, Ordering::Relaxed);
         if let Ok(mut pipeline) = self.shared.lock() {
             pipeline.framer.hold();
         }
@@ -289,20 +397,26 @@ impl Capture {
         config: &StreamConfig,
         format: SampleFormat,
         shared: Arc<Mutex<Pipeline>>,
-        level: Arc<AtomicU64>,
+        taps: Taps,
         frames: Sender<Frame>,
     ) -> Result<Stream> {
         // An error on the audio thread must not take the process down: the user
-        // may simply have unplugged a headset mid-sentence.
-        let on_error = |error| tracing::error!(?error, "audio stream error");
+        // may simply have unplugged a headset mid-sentence. It is recorded for
+        // the watchdog, which rebuilds the stream; logged once, because a dead
+        // device can report the same error on every callback.
+        let on_error = {
+            let signals = Arc::clone(&taps.signals);
+            move |error| {
+                if !signals.errored.swap(true, Ordering::Relaxed) {
+                    tracing::error!(?error, "audio stream error");
+                }
+            }
+        };
 
         let stream = match format {
             SampleFormat::F32 => device.build_input_stream(
                 config,
-                {
-                    let level = Arc::clone(&level);
-                    move |data: &[f32], _| process(&shared, &level, &frames, data)
-                },
+                move |data: &[f32], _| process(&shared, &taps, &frames, data),
                 on_error,
                 None,
             )?,
@@ -312,7 +426,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[i16], _| process(&shared, &level, &frames, &convert(data)),
+                    move |data: &[i16], _| process(&shared, &taps, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -323,7 +437,7 @@ impl Capture {
                 };
                 device.build_input_stream(
                     config,
-                    move |data: &[u16], _| process(&shared, &level, &frames, &convert(data)),
+                    move |data: &[u16], _| process(&shared, &taps, &frames, &convert(data)),
                     on_error,
                     None,
                 )?
@@ -335,6 +449,12 @@ impl Capture {
     }
 }
 
+/// What the audio callback publishes for other threads to read.
+struct Taps {
+    level: Arc<AtomicU64>,
+    signals: Arc<Signals>,
+}
+
 /// Runs on the audio callback thread: meter, resample, frame, hand off.
 ///
 /// Audio is passed through untouched. Per-buffer make-up gain used to sit here;
@@ -343,12 +463,14 @@ impl Capture {
 /// room noise were lifted to the same level as speech. Wispr Flow asks for the
 /// raw microphone (no AGC, noise suppression or echo cancellation) and leaves
 /// loudness to the recognizer, which is trained on exactly that.
-fn process(
-    shared: &Arc<Mutex<Pipeline>>,
-    level: &Arc<AtomicU64>,
-    frames: &Sender<Frame>,
-    samples: &[f32],
-) {
+fn process(shared: &Arc<Mutex<Pipeline>>, taps: &Taps, frames: &Sender<Frame>, samples: &[f32]) {
+    // Stops scanning at the first non-zero sample, and skips the scan
+    // entirely once one has been seen this take — which, for a working
+    // microphone, is within the first buffer.
+    if !taps.signals.heard.load(Ordering::Relaxed) && samples.iter().any(|&s| s != 0.0) {
+        taps.signals.heard.store(true, Ordering::Relaxed);
+    }
+
     // Blocking is deliberate. The only other holders are hold/arm/disarm,
     // which take microseconds; `try_lock` here used to discard the whole
     // callback's audio when it lost that race, leaving a hole mid-sentence.
@@ -356,7 +478,7 @@ fn process(
         return;
     };
 
-    pipeline.meter.push(samples, level);
+    pipeline.meter.push(samples, &taps.level);
     let resampled = pipeline.resampler.push(samples);
     for frame in pipeline.framer.push(&resampled) {
         if frames.send(frame).is_err() {
