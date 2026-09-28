@@ -13,6 +13,7 @@ pub mod auth;
 pub mod frame;
 pub mod inject;
 pub mod learn;
+pub mod mic;
 pub mod resample;
 pub mod session;
 

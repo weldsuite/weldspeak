@@ -7,7 +7,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use weldspeak_core::auth::now_secs;
 use weldspeak_core::learn::{self, Correction};
 
 use crate::snippets::Snippet;
@@ -318,15 +317,7 @@ pub async fn flush_to_dictionary(app: &AppHandle) {
         )
     };
 
-    let token = {
-        let state = app.state::<AppState>();
-        state
-            .auth
-            .lock()
-            .ok()
-            .and_then(|auth| auth.access_token(now_secs()).map(str::to_owned))
-    };
-    let Some(token) = token else {
+    let crate::auth::Access::Token(token) = crate::auth::access(app).await else {
         return;
     };
 
