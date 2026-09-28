@@ -39,6 +39,7 @@ export interface StartFrame {
   /**
    * Fast mode: skip the cleanup pass when the transcript has nothing for it
    * to fix, instead of always running it. Only meaningful with `format`.
+   * On unless the client says false, so apps that predate the setting get it.
    */
   fast?: boolean;
   /**
@@ -249,7 +250,7 @@ export function parseClientFrame(value: unknown): ClientFrame | null {
         keyterms,
         appName: typeof frame.appName === "string" ? frame.appName : null,
         format: typeof frame.format === "boolean" ? frame.format : true,
-        fast: frame.fast === true,
+        fast: typeof frame.fast === "boolean" ? frame.fast : true,
         retain: typeof frame.retain === "boolean" ? frame.retain : true,
       };
     }

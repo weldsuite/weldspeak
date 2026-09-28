@@ -53,11 +53,12 @@ describe("client frame parsing", () => {
     expect(frame).toMatchObject({ format: true });
   });
 
-  it("runs cleanup every time unless the client asks for fast mode", () => {
+  it("uses fast mode unless the client turns it off", () => {
     const start = { type: "start", sampleRate: 16_000, encoding: "linear16" };
-    expect(parseClientFrame(start)).toMatchObject({ fast: false });
-    expect(parseClientFrame({ ...start, fast: true })).toMatchObject({ fast: true });
-    expect(parseClientFrame({ ...start, fast: "yes" })).toMatchObject({ fast: false });
+    // Apps that predate the setting send nothing and get fast mode.
+    expect(parseClientFrame(start)).toMatchObject({ fast: true });
+    expect(parseClientFrame({ ...start, fast: false })).toMatchObject({ fast: false });
+    expect(parseClientFrame({ ...start, fast: "no" })).toMatchObject({ fast: true });
   });
 
   it("keeps history unless the client opts out", () => {
