@@ -135,6 +135,7 @@ fn label_one(code: &str) -> String {
             }
         }
         "Escape" => "Esc".into(),
+        "Fn" | "Function" => "Fn".into(),
         " " | "" => "None".into(),
         other if other.starts_with("Key") && other.len() == 4 => other[3..].to_string(),
         other if other.starts_with("Digit") => other[5..].to_string(),
@@ -316,6 +317,9 @@ fn macos_hid(code: &str) -> Option<u16> {
         "ShiftRight" => 60,
         "AltRight" | "OptionRight" => 61,
         "ControlRight" | "CtrlRight" => 62,
+        // Fn / Globe. It arrives as a flags change like the other modifiers,
+        // so the HID key table tracks it the same way.
+        "Fn" | "Function" => 63,
         "F17" => 64,
         "NumpadDecimal" => 65,
         "NumpadMultiply" => 67,
@@ -483,6 +487,7 @@ pub fn code_from_macos_hid(hid: u16) -> Option<String> {
             60 => "ShiftRight",
             61 => "AltRight",
             62 => "ControlRight",
+            63 => "Fn",
             122 => "F1",
             120 => "F2",
             99 => "F3",
@@ -537,5 +542,14 @@ mod tests {
         assert!(parse_codes("CommandOrControl+Space").is_none());
         assert!(parse_codes("ControlRight+ControlRight").is_none());
         assert!(parse_codes("ControlRight+MetaLeft+ShiftLeft").is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn watches_fn_on_macos() {
+        assert_eq!(parse_codes("Fn"), Some((63, 0)));
+        assert_eq!(code_from_macos_hid(63).as_deref(), Some("Fn"));
+        assert_eq!(label("Fn"), "Fn");
+        assert!(!types_while_held("Fn"));
     }
 }
