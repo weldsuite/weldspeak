@@ -85,10 +85,19 @@ jobs:
       - run: pnpm --filter @weldspeak/desktop-ui build
       # `exec` runs the CLI directly so `--bundles` is not swallowed by pnpm
       # or forwarded to cargo (which is what `tauri build -- --bundles` does).
+      #
+      # On macOS, Tauri signs with the Developer ID certificate in
+      # APPLE_CERTIFICATE (imported into a throwaway keychain) and notarizes
+      # and staples the .app when the App Store Connect API key is present.
       - name: Build installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         shell: bash
         run: |
           extra=()
@@ -97,7 +106,37 @@ jobs:
           else
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set; this build cannot produce auto-updates."
           fi
+
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ -z "$APPLE_CERTIFICATE" ]; then
+              echo "::warning::APPLE_CERTIFICATE is not set; the macOS app is unsigned and Gatekeeper will block it."
+            elif [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ] || [ -z "$APPLE_API_KEY_P8" ]; then
+              echo "::warning::App Store Connect API key secrets are incomplete; the macOS app is signed but not notarized."
+            else
+              key_path="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+              printf '%s\n' "$APPLE_API_KEY_P8" > "$key_path"
+              export APPLE_API_KEY_PATH="$key_path"
+              echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+            fi
+          fi
+
           pnpm --filter @weldspeak/desktop-ui exec tauri build ${{ matrix.args }} "${extra[@]}"
+
+      # Tauri signs the .dmg but only notarizes the .app inside it. Notarizing
+      # the .dmg as well lets Gatekeeper clear the download offline, before
+      # the app is ever copied out of it.
+      - name: Notarize disk image
+        if: runner.os == 'macOS' && env.APPLE_API_KEY_PATH != ''
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          for dmg in target/release/bundle/dmg/*.dmg; do
+            xcrun notarytool submit "$dmg" --wait \
+              --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER"
+            xcrun stapler staple "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose "$dmg"
+          done
 
       - name: Upload installer
         uses: actions/upload-artifact@v4

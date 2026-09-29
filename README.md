@@ -166,6 +166,54 @@ The matching **public** key is committed in
 private key, CI still builds installers but skips `.sig` / updater tarballs and
 cannot refresh `latest.json`.
 
+### macOS signing and notarization
+
+The macOS app is signed with the **Developer ID Application: WeldReach B.V.
+(ZM5U8XB745)** certificate and notarized by Apple, so it opens without a
+Gatekeeper warning. Tauri signs and notarizes the `.app` (with the hardened
+runtime and `entitlements.plist`); the workflow then notarizes and staples the
+`.dmg` too.
+
+| Secret | Purpose |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Developer ID Application certificate and private key, as a base64 `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | Password the `.p12` was exported with |
+| `APPLE_API_KEY` | App Store Connect API key ID, e.g. `2X9R4HXF34` |
+| `APPLE_API_ISSUER` | Issuer ID shown above the keys list in App Store Connect |
+| `APPLE_API_KEY_P8` | Contents of that key's `AuthKey_<id>.p8` file |
+
+Without the certificate the app is unsigned; with the certificate but no API
+key it is signed but not notarized. Both cases build, with a warning.
+
+To create them, on a Mac that has the certificate in its login keychain:
+
+```bash
+# Keychain Access → My Certificates → right-click the Developer ID
+# Application certificate → Export → WeldSpeak.p12, with a password.
+base64 -i WeldSpeak.p12 | gh secret set APPLE_CERTIFICATE
+gh secret set APPLE_CERTIFICATE_PASSWORD
+```
+
+For the API key: App Store Connect → Users and Access → Integrations → App
+Store Connect API → Team Keys → generate a key with the **Developer** role.
+The `.p8` downloads once only.
+
+```bash
+gh secret set APPLE_API_KEY --body <key id>
+gh secret set APPLE_API_ISSUER --body <issuer id>
+gh secret set APPLE_API_KEY_P8 < AuthKey_<key id>.p8
+```
+
+To sign a local build with the certificate in your keychain:
+
+```bash
+APPLE_SIGNING_IDENTITY="Developer ID Application: WeldReach B.V. (ZM5U8XB745)" \
+  pnpm --filter @weldspeak/desktop-ui exec tauri build --bundles app,dmg
+```
+
+Add `APPLE_API_KEY`, `APPLE_API_ISSUER` and `APPLE_API_KEY_PATH` (the path to
+the `.p8`) to notarize it too.
+
 ## Production
 
 Deployed to the `WeldSuite` Cloudflare account as the Worker `weldspeak-api`,
@@ -301,10 +349,15 @@ Installers are produced by `.github/workflows/desktop.yml` on
 tags, which also get a GitHub Release). Pushes to `main` refresh the rolling
 `desktop` release's `latest.json`, which is what installed apps update from.
 
-Distribution to other people needs an Apple Developer account (notarization)
-and a Windows code-signing certificate. Both have procurement lead time —
-start them early, they are the usual reason a release slips.
+macOS builds are signed and notarized (see
+[macOS signing and notarization](#macos-signing-and-notarization)). Windows
+still needs a code-signing certificate, which has procurement lead time —
+start early, it is the usual reason a release slips.
 
 macOS Accessibility permission resets when the app's signature changes, so keep
 the signing identity stable across releases or every update silently breaks
-injection for existing users.
+injection for existing users. Renewing the Developer ID certificate is safe:
+macOS matches on the team ID (ZM5U8XB745), not the individual certificate.
+Moving from unsigned to signed builds is a one-time change of identity, so
+existing Mac installs have to grant Accessibility and Microphone again after
+that first signed update.

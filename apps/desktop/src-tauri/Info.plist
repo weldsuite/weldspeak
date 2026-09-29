@@ -8,6 +8,10 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>WeldSpeak listens while you hold the dictation key, so it can turn what you say into text.</string>
 
+  <!-- Asked the first time "Pause media while dictating" controls a player. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>WeldSpeak pauses your music while you dictate and resumes it when you finish.</string>
+
   <!-- Tray-only application: no dock icon, no main window. -->
   <key>LSUIElement</key>
   <true/>
