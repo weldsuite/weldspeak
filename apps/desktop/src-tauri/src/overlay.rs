@@ -296,7 +296,7 @@ fn ripple(phase: f32) -> f32 {
 }
 
 /// What goes inside the capsule.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 pub(crate) enum Content<'a> {
     Bars {
         lengths: [f32; BAR_COUNT],
@@ -308,7 +308,7 @@ pub(crate) enum Content<'a> {
 
 /// Rasterise the pill into premultiplied BGRA, `width × height` physical
 /// pixels at `scale` physical pixels per logical pixel.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 pub(crate) fn rasterize(width: usize, height: usize, scale: f32, content: &Content) -> Vec<u8> {
     let mut pixels = vec![0u8; width * height * 4];
     let (w, h) = (width as f32, height as f32);
@@ -383,7 +383,7 @@ pub(crate) fn rasterize(width: usize, height: usize, scale: f32, content: &Conte
 
 /// Signed distance from a point (relative to the rectangle's centre) to a
 /// rounded rectangle with half extents `hw` × `hh`.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn rounded_rect_sdf(x: f32, y: f32, hw: f32, hh: f32, r: f32) -> f32 {
     let qx = x.abs() - (hw - r);
     let qy = y.abs() - (hh - r);
@@ -391,17 +391,17 @@ fn rounded_rect_sdf(x: f32, y: f32, hw: f32, hh: f32, r: f32) -> f32 {
     outside + qx.max(qy).min(0.0) - r
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn coverage(distance: f32) -> f32 {
     (0.5 - distance).clamp(0.0, 1.0)
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn to_f32(c: (u8, u8, u8)) -> (f32, f32, f32) {
     (f32::from(c.0), f32::from(c.1), f32::from(c.2))
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn mix<A: Into<Rgb>, B: Into<Rgb>>(a: A, b: B, t: f32) -> (f32, f32, f32) {
     let (a, b) = (a.into().0, b.into().0);
     (
@@ -411,7 +411,7 @@ fn mix<A: Into<Rgb>, B: Into<Rgb>>(a: A, b: B, t: f32) -> (f32, f32, f32) {
     )
 }
 
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 struct Rgb((f32, f32, f32));
 
 impl From<(u8, u8, u8)> for Rgb {
