@@ -11,5 +11,11 @@
   <!-- The dictation WebSocket and the token endpoints. -->
   <key>com.apple.security.network.client</key>
   <true/>
+
+  <!-- "Pause media while dictating" drives Music and Spotify through
+       osascript. The hardened runtime rejects those Apple Events unless the
+       app itself declares them, even though osascript sends them. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
 </dict>
 </plist>
