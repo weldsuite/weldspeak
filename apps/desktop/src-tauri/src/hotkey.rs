@@ -125,9 +125,11 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
     }
 
     for part in &parts {
-        if part.eq_ignore_ascii_case("Fn") || part.eq_ignore_ascii_case("Function") {
+        // Windows keyboards handle Fn in firmware; it never reaches the OS.
+        // macOS reports it like any other modifier.
+        if cfg!(not(target_os = "macos")) && is_fn(part) {
             return Err(
-                "macOS does not report the Fn key to applications. Try holding Right Option instead."
+                "Windows does not report the Fn key to applications. Try holding Right Ctrl instead."
                     .into(),
             );
         }
@@ -143,8 +145,14 @@ pub fn validate_for_push_to_talk(accelerator: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn is_fn(code: &str) -> bool {
+    code.eq_ignore_ascii_case("Fn") || code.eq_ignore_ascii_case("Function")
+}
+
 /// Bindable keys offered during Settings capture, in display/priority order.
+/// Keys this OS cannot watch (Fn on Windows) are skipped.
 const CAPTURE_CANDIDATES: &[&str] = &[
+    "Fn",
     "ControlRight",
     "ControlLeft",
     "AltRight",
@@ -229,6 +237,14 @@ pub fn settled_held_accelerator() -> Option<String> {
 
 /// Hint shown under the bind button when the key will also type.
 pub fn hold_warning(accelerator: &str) -> Option<String> {
+    if cfg!(target_os = "macos") && codes::parts(accelerator).into_iter().any(is_fn) {
+        // Out of the box, pressing Fn / Globe alone opens the emoji picker or
+        // switches input source, which would fire on every dictation.
+        return Some(
+            "If holding Fn also opens emoji or changes input source, set System Settings \u{2192} Keyboard \u{2192} \u{201c}Press \u{1f310} key to\u{201d} to Do Nothing."
+                .into(),
+        );
+    }
     if types_while_held(accelerator) {
         Some(format!(
             "Holding {} also types into whatever has focus. A modifier or function key is quieter.",
@@ -431,9 +447,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn explains_why_fn_cannot_be_used() {
         let error = validate_for_push_to_talk("Fn").unwrap_err();
-        assert!(error.contains("Right Option"));
+        assert!(error.contains("Right Ctrl"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn accepts_fn_on_macos_with_a_globe_key_hint() {
+        assert!(validate_for_push_to_talk("Fn").is_ok());
+        assert!(validate_for_push_to_talk("Fn+ControlLeft").is_ok());
+        assert!(hold_warning("Fn").unwrap().contains("Do Nothing"));
     }
 
     #[test]
