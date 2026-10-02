@@ -199,6 +199,17 @@ describe("rejecting shortened cleanups", () => {
       "Some premium domain names from Weld like:\n• WeldSuite\n• WeldDesk\n\nThese are smart to claim for building products later.";
     expect(judgeCleanup(raw, rewritten)).toEqual({ ok: false, reason: "dropped_words" });
   });
+
+  it("accepts spoken line breaks turned into real ones", () => {
+    // Two "enter"s dropped from a short message used to count as dropped
+    // words, so the raw "enter enter" shipped instead of the line breaks.
+    expect(judgeCleanup("hi sarah enter enter thanks for the report", "Hi Sarah,\n\nThanks for the report.")).toEqual({
+      ok: true,
+    });
+    expect(judgeCleanup("hoi sarah nieuwe regel bedankt voor het rapport", "Hoi Sarah,\nBedankt voor het rapport.")).toEqual({
+      ok: true,
+    });
+  });
 });
 
 describe("cleanup", () => {
@@ -586,6 +597,7 @@ describe("fast mode", () => {
     expect(cleanupNeeded("Let's meet Thursday, no, actually Wednesday.", [])).toBe("correction");
     expect(cleanupNeeded("Hi Dana comma thanks for the report.", [])).toBe("spoken_format");
     expect(cleanupNeeded("Open index dot ts.", [])).toBe("spoken_format");
+    expect(cleanupNeeded("Hi Sarah. Enter. Thanks for the report.", [])).toBe("spoken_format");
     expect(cleanupNeeded("The the bead looks wide.", [])).toBe("repeat");
     expect(cleanupNeeded("we used the inconel on the root", [term("Inconel 625")])).toBe("unpunctuated");
     expect(cleanupNeeded("We used in co nel.", [term("Inconel 625", "in co nel")])).toBe("sounds_like");

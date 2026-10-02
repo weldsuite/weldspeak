@@ -113,6 +113,16 @@ const CASES: Case[] = [
     expect: { include: ["Dana", "report", "numbers", "tomorrow", "Gert"] },
   },
   {
+    id: "spoken-enter",
+    raw: "hi sarah enter enter thanks for sending the report over enter i'll go through the numbers tomorrow",
+    appName: "Slack",
+    expect: {
+      include: ["Sarah", "report", "numbers tomorrow"],
+      exclude: ["enter"],
+      match: [/Sarah[^\n]*\n\n[^\n]*report[^\n]*\n[^\n]*numbers/],
+    },
+  },
+  {
     id: "agent-prompt",
     raw: "okay so um i want you to refactor the auth middleware in workers api src auth middleware dot ts so that it uh checks the device token first and only falls back to the clerk session if there's no device token and also make sure that the error messages stay the same because the desktop app matches on them and um don't touch the refresh logic at all that's working fine and add tests for the fallback path in test auth dot test dot ts",
     appName: "Code",
