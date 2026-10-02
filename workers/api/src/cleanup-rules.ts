@@ -23,11 +23,12 @@ Rules:
 2. Keep the speaker's own words. Make the minimum edits needed: this is cleanup, not rewriting. Do not paraphrase, reword for style, change the tone, or add anything that was not said.
 3. Remove only noise: filler words (um, uh, er, ah, "like" and "you know" used as filler, I mean, sort of, kind of, basically, so yeah — and the same in other languages, such as Dutch ehm, nou, zeg maar, eigenlijk; German äh, ähm, halt, sozusagen; French euh, genre, du coup; Spanish este, o sea, pues), stutters, repeated words, and abandoned false starts. Words that carry intent stay, such as "I want you to", "please", "can you", or "make sure".
 4. Apply self-corrections in any language: when the speaker corrects themselves ("Thursday, no actually Wednesday", "send it to John, wait, to Sarah", "donderdag, nee wacht, woensdag"), keep only the final version and drop the correction phrase.
-5. Fix punctuation, capitalisation, spacing, and obvious speech-recognition mistakes (wrong homophones, misheard words) from context. Turn dictated punctuation such as "comma", "period", "question mark", "new line", or "new paragraph" into the real thing.
-6. Break long run-on speech into sentences, and into paragraphs where the topic changes, without dropping anything.
-7. Use a list only when the speaker clearly enumerates separate items ("first … second … third …", "number one …", "bullet point …") or asks for one: "1." for ordered steps, "- " for bullets. Otherwise keep prose.
-8. Preserve technical content exactly: code identifiers, file names, paths, commands, flags, URLs, numbers, product names, and acronyms. Convert spoken symbols when clearly meant ("index dot ts" → "index.ts", "dash dash force" → "--force", "user underscore id" → "user_id").
-9. Write in the language the speaker used. Never translate.
+5. Fix punctuation, capitalisation, spacing, and obvious speech-recognition mistakes (wrong homophones, misheard words) from context. Turn dictated punctuation such as "comma", "period", or "question mark" into the real thing.
+6. Line breaks are commands too. "Enter", "press enter", "new line", and "next line" (Dutch "nieuwe regel", German "neue Zeile", French "à la ligne") each become one real line break, and "new paragraph" becomes two. Repeats stack: "enter enter" is two line breaks, which leaves an empty line. Never write the command word itself. "hi sarah enter enter thanks for the report" → "Hi Sarah," then an empty line, then "Thanks for the report." "Enter" used as an ordinary verb stays a word: "enter your password" → "Enter your password."
+7. Break long run-on speech into sentences, and into paragraphs where the topic changes, without dropping anything.
+8. Use a list only when the speaker clearly enumerates separate items ("first … second … third …", "number one …", "bullet point …") or asks for one: "1." for ordered steps, "- " for bullets. Otherwise keep prose.
+9. Preserve technical content exactly: code identifiers, file names, paths, commands, flags, URLs, numbers, product names, and acronyms. Convert spoken symbols when clearly meant ("index dot ts" → "index.ts", "dash dash force" → "--force", "user underscore id" → "user_id").
+10. Write in the language the speaker used. Never translate.
 
 Output only the cleaned text: no preamble, labels, quotes, code fences, or notes.`;
 
@@ -256,6 +257,9 @@ const STOPWORDS = new Set([
   "we", "so", "well", "yeah", "yes", "no", "ok", "okay", "just", "that", "this",
   "for", "with", "mean", "sort", "kind", "basically", "actually", "really",
   "wait", "sorry", "right", "comma", "period", "dot", "new", "line", "paragraph",
+  // Spoken line breaks: "hi sarah enter enter thanks" becomes two real line
+  // breaks, and the words must not count as dropped.
+  "enter", "press", "next", "nieuwe", "regel", "alinea", "neue", "zeile", "absatz", "ligne",
   "question", "mark", "colon", "dash", "underscore", "slash", "bullet", "point",
   "first", "second", "third", "number", "one", "two", "three", "four", "five",
   "then", "also", "there", "their", "they", "too", "not", "can", "will",
@@ -398,7 +402,7 @@ const FILLERS =
 const CORRECTIONS =
   /\b(?:no|nope|wait|actually|sorry|scratch that|i meant|or rather|rather|let me rephrase|nee|nein|warte|eigentlich|eigenlijk|bedoel|non|attends|plutôt|perdón|mejor dicho)\b/iu;
 const SPOKEN_FORMAT =
-  /\b(?:comma|period|full stop|question mark|exclamation (?:mark|point)|colon|semicolon|new line|newline|new paragraph|next line|bullet(?: point)?|number (?:one|two|three|1|2|3)|dot|slash|backslash|underscore|dash|hyphen|hashtag|at sign|open (?:paren|bracket|quote)|close (?:paren|bracket|quote)|quote unquote|komma|punt|nieuwe regel|punkt|neue zeile|virgule|à la ligne)\b/iu;
+  /\b(?:comma|period|full stop|question mark|exclamation (?:mark|point)|colon|semicolon|new line|newline|new paragraph|next line|enter|bullet(?: point)?|number (?:one|two|three|1|2|3)|dot|slash|backslash|underscore|dash|hyphen|hashtag|at sign|open (?:paren|bracket|quote)|close (?:paren|bracket|quote)|quote unquote|komma|punt|nieuwe regel|punkt|neue zeile|virgule|à la ligne)\b/iu;
 /** Past this length, paragraphs and run-on sentences are worth a pass. */
 const FAST_MAX_WORDS = 30;
 
