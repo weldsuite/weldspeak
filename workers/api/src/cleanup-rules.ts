@@ -250,19 +250,15 @@ export function looksLikeAssistantReply(text: string): boolean {
   );
 }
 
-/** Words that carry no identity: cleanup may legitimately drop or change them. */
-const STOPWORDS = new Set([
-  "um", "uh", "er", "ah", "hmm", "like", "you", "know", "the", "a", "an", "and",
-  "or", "but", "to", "of", "in", "on", "at", "is", "are", "was", "it", "its", "i",
-  "we", "so", "well", "yeah", "yes", "no", "ok", "okay", "just", "that", "this",
-  "for", "with", "mean", "sort", "kind", "basically", "actually", "really",
+/** What cleanup is there to remove: fillers, correction markers, spoken punctuation. */
+const NOISE = new Set([
+  "um", "uh", "er", "ah", "hmm", "like", "you", "know", "so", "well", "yeah", "yes",
+  "no", "ok", "okay", "just", "mean", "sort", "kind", "basically", "actually", "really",
   "wait", "sorry", "right", "comma", "period", "dot", "new", "line", "paragraph",
   // Spoken line breaks: "hi sarah enter enter thanks" becomes two real line
   // breaks, and the words must not count as dropped.
   "enter", "press", "next", "nieuwe", "regel", "alinea", "neue", "zeile", "absatz", "ligne",
   "question", "mark", "colon", "dash", "underscore", "slash", "bullet", "point",
-  "first", "second", "third", "number", "one", "two", "three", "four", "five",
-  "then", "also", "there", "their", "they", "too", "not", "can", "will",
   // Fillers and correction markers the model rightly drops in other languages;
   // without them a good Dutch or German cleanup looks like dropped words.
   "ehm", "uhm", "nou", "zeg", "maar", "eigenlijk", "gewoon", "even", "sowieso", "toch",
@@ -270,6 +266,15 @@ const STOPWORDS = new Set([
   "quasi", "sozusagen", "genau", "naja", "irgendwie", "also", "nein", "warte", "euh",
   "bah", "ben", "genre", "voilà", "quoi", "alors", "donc", "coup", "non", "attends",
   "este", "pues", "bueno", "sea", "tipo", "vale", "espera",
+]);
+
+/** Words that carry no identity: cleanup may legitimately drop or change them. */
+const STOPWORDS = new Set([
+  ...NOISE,
+  "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "is", "are",
+  "was", "it", "its", "i", "we", "that", "this", "for", "with",
+  "first", "second", "third", "number", "one", "two", "three", "four", "five",
+  "then", "there", "their", "they", "too", "not", "can", "will",
 ]);
 
 function contentWords(text: string): string[] {
@@ -345,6 +350,56 @@ function echoesContext(raw: string, cleaned: string, field: FieldContext | undef
   });
 }
 
+/** Number words the model may write as digits; both sides are compared as digits. */
+const DIGITS: Record<string, string> = {
+  zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5",
+  six: "6", seven: "7", eight: "8", nine: "9", ten: "10",
+};
+
+/** The words of a text in order, with a stuttered word counted once. */
+function spokenSequence(text: string): string[] {
+  const words = normalizedWords(text).map((word) => DIGITS[word] ?? word);
+  return words.filter((word, i) => word !== words[i - 1]);
+}
+
+/**
+ * What each text has left after the last word the two share in order.
+ *
+ * A longest common subsequence, one row at a time. Each tail starts at the
+ * earliest point by which everything shared has been seen, so a word that
+ * occurs again later in the transcript does not hide what follows it.
+ */
+function unsharedTails(raw: string[], out: string[]): { raw: string[]; out: string[] } {
+  let row = new Uint16Array(out.length + 1);
+  // How much of the output the first i transcript words account for.
+  const reach = [0];
+  for (let i = 1; i <= raw.length; i++) {
+    const next = new Uint16Array(out.length + 1);
+    for (let j = 1; j <= out.length; j++) {
+      next[j] = raw[i - 1] === out[j - 1] ? row[j - 1]! + 1 : Math.max(row[j]!, next[j - 1]!);
+    }
+    reach.push(next[out.length]!);
+    row = next;
+  }
+  const shared = row[out.length]!;
+  return { raw: raw.slice(reach.indexOf(shared)), out: out.slice(row.indexOf(shared)) };
+}
+
+/**
+ * True when the cleanup ends on a word from inside the transcript and what
+ * was said after it is gone.
+ *
+ * The content-word checks cannot see this when the lost ending is small words
+ * or numbers ("…is working for me", "…four five six"), or in a short
+ * dictation, where one content word may go. An ending the model changed (a
+ * misheard last word, "three thirty" → "3:30") leaves words of its own after
+ * the last shared one and is left to those checks.
+ */
+function stopsEarly(raw: string, cleaned: string): boolean {
+  const tails = unsharedTails(spokenSequence(raw), spokenSequence(cleaned));
+  return tails.out.length === 0 && tails.raw.some((word) => !NOISE.has(word));
+}
+
 export type Verdict =
   | { ok: true }
   | {
@@ -373,23 +428,25 @@ export function judgeCleanup(raw: string, cleaned: string, field?: FieldContext)
   if (cleaned.length > raw.length * 1.4 + 40) return { ok: false, reason: "too_long" };
 
   const expected = contentWords(raw);
-  if (expected.length === 0) return { ok: true };
+  if (expected.length > 0) {
+    const kept = matchWords(expected, contentWords(cleaned));
+    const missing = kept.filter((done) => !done).length;
+    // A legitimate self-correction ("send it to John, wait, to Sarah") drops a
+    // word even from a short utterance, so one miss is always allowed. Two would
+    // let "The meeting is at three." pass for "what time is the meeting".
+    const allowed = Math.max(1, Math.floor(expected.length * 0.15));
+    if (missing > allowed) return { ok: false, reason: "dropped_words" };
 
-  const kept = matchWords(expected, contentWords(cleaned));
-  const missing = kept.filter((done) => !done).length;
-  // A legitimate self-correction ("send it to John, wait, to Sarah") drops a
-  // word even from a short utterance, so one miss is always allowed. Two would
-  // let "The meeting is at three." pass for "what time is the meeting".
-  const allowed = Math.max(1, Math.floor(expected.length * 0.15));
-  if (missing > allowed) return { ok: false, reason: "dropped_words" };
-
-  // Truncation hides inside a passing ratio on a long prompt: losing the last
-  // sentence of two hundred words is under 15%. The last few content words
-  // must survive — at least one of them, since a closing self-correction
-  // legitimately replaces the others.
-  if (expected.length >= 6) {
-    if (!kept.slice(-4).some(Boolean)) return { ok: false, reason: "cut_off" };
+    // Truncation hides inside a passing ratio on a long prompt: losing the last
+    // sentence of two hundred words is under 15%. The last few content words
+    // must survive — at least one of them, since a closing self-correction
+    // legitimately replaces the others.
+    if (expected.length >= 6) {
+      if (!kept.slice(-4).some(Boolean)) return { ok: false, reason: "cut_off" };
+    }
   }
+
+  if (stopsEarly(raw, cleaned)) return { ok: false, reason: "cut_off" };
 
   return { ok: true };
 }

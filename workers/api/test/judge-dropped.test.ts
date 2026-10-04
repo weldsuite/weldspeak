@@ -23,11 +23,51 @@ const cases: Array<[string, string, string]> = [
     "please send the updated weld procedure to the whole team before friday and ask marco to check the inconel samples in the lab and then book the meeting room for monday morning",
     "Please send the updated weld procedure to the whole team before Friday, and then book the meeting room for Monday morning.",
   ],
+  // The next four passed while the ending was only checked by its content
+  // words: small words and numbers are not content words, and a short
+  // dictation may lose one content word anyway.
+  [
+    "short dictation loses an ending of small words",
+    "can you check if this is working for me",
+    "Can you check if this is working?",
+  ],
+  [
+    "counting stops early",
+    "testing one two three four five six",
+    "Testing one two three.",
+  ],
+  [
+    "counting stops early, written as digits",
+    "testing one two three four five six",
+    "Testing 1, 2, 3.",
+  ],
+  [
+    "closing clause with one content word",
+    "update the pricing page so the pro plan shows the yearly discount and move the faq below the plans and then we are done",
+    "Update the pricing page so the Pro plan shows the yearly discount, and move the FAQ below the plans.",
+  ],
 ];
 
 for (const [name, raw, cleaned] of cases) {
   it(name, () => {
     const verdict = judgeCleanup(raw, cleaned);
     expect(verdict.ok).toBe(false);
+  });
+}
+
+// An ending the cleanup is there to change is not a cut.
+const kept: Array<[string, string, string]> = [
+  ["trailing filler", "the weld looks good so yeah", "The weld looks good."],
+  ["spoken punctuation at the end", "is the weld good question mark", "Is the weld good?"],
+  ["line break at the end", "thanks for the report enter", "Thanks for the report."],
+  ["misheard last word fixed", "deploy it to versel", "Deploy it to Vercel."],
+  ["number written as a digit at the end", "the meeting is at five", "The meeting is at 5."],
+  ["time written out at the end", "the meeting is at three thirty", "The meeting is at 3:30."],
+  ["stuttered last word", "send it to the team team", "Send it to the team."],
+];
+
+for (const [name, raw, cleaned] of kept) {
+  it(`keeps a cleanup with a ${name}`, () => {
+    expect(judgeCleanup(raw, cleaned)).toEqual({ ok: true });
   });
 }
