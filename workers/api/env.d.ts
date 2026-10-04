@@ -21,5 +21,10 @@ declare namespace Cloudflare {
      * dictation falls back to batch Nova-3 on Workers AI.
      */
     OPENROUTER_API_KEY?: string;
+    /**
+     * Vercel AI Gateway key for streaming MAI-Transcribe. Optional: without
+     * it a streaming `STT_MODEL` is transcribed in batch through OpenRouter.
+     */
+    AI_GATEWAY_API_KEY?: string;
   }
 }

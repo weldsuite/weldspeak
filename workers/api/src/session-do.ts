@@ -32,7 +32,8 @@ import {
 import { cleanupNeeded, cleanupTranscript, fitToCursor, protectTerms } from "./format.js";
 import { loadTerms } from "./routes/dictionary.js";
 import { hasSpeech, Segmenter } from "./segmenter.js";
-import { isWorkersAiModel, transcribe, transcribeFallback } from "./stt.js";
+import { batchModel, isStreamingModel, isWorkersAiModel, transcribe, transcribeFallback } from "./stt.js";
+import { TranscriptionStream } from "./stt-stream.js";
 
 /** One transcribed piece of a dictation, and which recognizer produced it. */
 interface Piece {
@@ -199,6 +200,16 @@ export class DictationSession extends DurableObject<Env> {
   #segmenter = new Segmenter();
   /** Transcriptions of the pieces sent so far, in order. */
   #pieces: Promise<Piece | null>[] = [];
+  /**
+   * Streaming recognition (MAI-Transcribe-2-Streaming, see ./stt-stream.ts):
+   * the audio also goes to the recognizer as it arrives, and `stop` waits
+   * only for its last words. The pieces are still cut but held back rather
+   * than transcribed; they are what the batch recognizer gets if the stream
+   * fails, after which the dictation carries on as a batch one.
+   */
+  #stream: TranscriptionStream | null = null;
+  /** Pieces cut while the stream is live, in order. */
+  #held: Uint8Array[] = [];
   /** Aborts an in-flight batch transcription when the dictation is cancelled. */
   #abort = new AbortController();
   /** Dictionary, loaded once at `start` for recognition and reused for cleanup. */
@@ -328,6 +339,15 @@ export class DictationSession extends DurableObject<Env> {
     this.#terms = await loadTerms(this.env.DB, identity.userId, identity.orgId);
     this.#batch = !isWorkersAiModel(this.env.STT_MODEL);
 
+    // Not waited for: audio is held until the socket opens, so the handshake
+    // does not delay `ready`. Without a gateway key the dictation is a batch one.
+    if (isStreamingModel(this.env.STT_MODEL) && this.env.AI_GATEWAY_API_KEY) {
+      this.#stream = new TranscriptionStream(this.env, frame.locale, {
+        onPartial: (text) => this.#send({ type: "partial", text }),
+        onFailure: (reason) => this.#abandonStream(reason),
+      });
+    }
+
     if (!this.#batch) {
       // Include `soundsLike` hints as extra keyterms so pronunciation
       // spellings also boost the written form Deepgram should emit.
@@ -450,9 +470,12 @@ export class DictationSession extends DurableObject<Env> {
     }
 
     if (this.#batch) {
-      for (const piece of this.#segmenter.push(new Uint8Array(chunk))) {
-        this.#pieces.push(this.#transcribePiece(piece));
+      const audio = new Uint8Array(chunk);
+      for (const piece of this.#segmenter.push(audio)) {
+        if (this.#stream) this.#held.push(piece);
+        else this.#pieces.push(this.#transcribePiece(piece));
       }
+      this.#stream?.send(audio);
       return;
     }
 
@@ -476,7 +499,7 @@ export class DictationSession extends DurableObject<Env> {
     let engine: string = this.env.STT_MODEL;
     let pieces: number[] = [];
     if (this.#batch) {
-      const recognized = await this.#transcribeBatch();
+      const recognized = (await this.#finishStream()) ?? (await this.#transcribeBatch());
       if (recognized === null) return;
       raw = recognized.text;
       engine = recognized.engine;
@@ -529,7 +552,7 @@ export class DictationSession extends DurableObject<Env> {
         uploadKB: Math.round(this.#audioBytes / 1024),
         // Words per piece, then before and after cleanup: counts only, never
         // text, so a dictation that lost words shows which stage lost them.
-        ...(this.#batch ? { pieceWords: pieces } : {}),
+        ...(pieces.length > 0 ? { pieceWords: pieces } : {}),
         rawWords: countWords(raw),
         words: countWords(text),
         ...timings,
@@ -545,6 +568,34 @@ export class DictationSession extends DurableObject<Env> {
     this.ctx.waitUntil(this.#persist(identity, raw, text, durationMs));
 
     this.#teardown();
+  }
+
+  /**
+   * End the stream and take its text. Returns null when there is no stream or
+   * it failed, in which case the pieces it was holding are already with the
+   * batch recognizer and `#transcribeBatch` collects them.
+   */
+  async #finishStream(): Promise<{ text: string; engine: string; pieceWords: number[] } | null> {
+    const stream = this.#stream;
+    if (!stream) return null;
+    try {
+      return { text: await stream.finish(), engine: this.env.STT_MODEL, pieceWords: [] };
+    } catch (error) {
+      this.#abandonStream(String(error));
+      return null;
+    }
+  }
+
+  /** Give up on the stream and hand what it was holding to the batch recognizer. */
+  #abandonStream(reason: string): void {
+    const stream = this.#stream;
+    if (!stream) return;
+    this.#stream = null;
+    stream.close();
+    if (this.#cancelled) return;
+    console.warn(JSON.stringify({ msg: "transcription stream failed; using batch", reason }));
+    for (const piece of this.#held) this.#pieces.push(this.#transcribePiece(piece));
+    this.#held = [];
   }
 
   /**
@@ -568,7 +619,7 @@ export class DictationSession extends DurableObject<Env> {
     const done = pieces as Piece[];
     return {
       text: done.map((piece) => piece.text).filter(Boolean).join(" "),
-      engine: done.some((piece) => piece.engine === "fallback") ? "fallback" : this.env.STT_MODEL,
+      engine: done.some((piece) => piece.engine === "fallback") ? "fallback" : batchModel(this.env.STT_MODEL),
       pieceWords: done.map((piece) => countWords(piece.text)),
     };
   }
@@ -583,7 +634,7 @@ export class DictationSession extends DurableObject<Env> {
         audioMs: bytesToMs(pcm.byteLength),
         signal: this.#abort.signal,
       });
-      return { text, engine: this.env.STT_MODEL };
+      return { text, engine: batchModel(this.env.STT_MODEL) };
     } catch (error) {
       if (this.#cancelled) return null;
       console.warn(JSON.stringify({ msg: "transcription failed; using fallback", error: String(error) }));
@@ -688,6 +739,9 @@ export class DictationSession extends DurableObject<Env> {
   #teardown(): void {
     this.#abort.abort();
     this.#segmenter.finish();
+    this.#stream?.close();
+    this.#stream = null;
+    this.#held = [];
     try {
       this.#upstream?.close();
     } catch {
