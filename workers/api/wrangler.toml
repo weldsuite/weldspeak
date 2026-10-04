@@ -54,12 +54,17 @@ APP_URL = "https://weldspeak.weldsuite.org"
 # scripts/bench-cleanup.ts). If OpenRouter fails, the Workers AI copy answers.
 # An "@cf/..." name here runs on Workers AI only.
 CLEANUP_MODEL = "google/gemma-4-26b-a4b-it"
-# Speech-to-text. MAI-Transcribe 2 through OpenRouter (batch, sent on release;
-# see src/stt.ts): 60 languages with detection and code switching, and keyword
-# biasing in every language. Needs the OPENROUTER_API_KEY secret; without it,
-# or when it fails, a dictation falls back to batch Nova-3 on Workers AI.
+# Speech-to-text. MAI-Transcribe 2 streamed through Vercel AI Gateway (see
+# src/stt-stream.ts): the audio is recognized while it is spoken, so release
+# waits a median 175 ms for the last words against 850 ms for a batch request
+# (scripts/bench-stt.ts). Needs the AI_GATEWAY_API_KEY secret. Without it, or
+# when the stream fails, the same audio goes to the batch model through
+# OpenRouter (src/stt.ts, OPENROUTER_API_KEY), and from there to batch Nova-3
+# on Workers AI.
+# The streaming model has no keyword biasing; to get it back at the cost of
+# the wait, set this to the batch model, "microsoft/mai-transcribe-2".
 # To roll back to streaming Nova-3, set this to "@cf/deepgram/nova-3".
-STT_MODEL = "microsoft/mai-transcribe-2"
+STT_MODEL = "microsoft/mai-transcribe-2-streaming"
 # Publishable: same Clerk application as WeldSuite. Encodes clerk.weldsuite.org.
 CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"
 
@@ -68,6 +73,7 @@ CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsud2VsZHN1aXRlLm9yZyQ"
 #   CLERK_WEBHOOK_SECRET    Svix signing secret for the Clerk webhook
 #   TOKEN_SIGNING_KEY       Random 32+ byte secret used to sign WeldSpeak access tokens
 #   OPENROUTER_API_KEY      OpenRouter key for MAI-Transcribe (sk-or-...)
+#   AI_GATEWAY_API_KEY      Vercel AI Gateway key for streaming MAI-Transcribe (vck_...)
 
 # Keeps the per-dictation "dictation timings" log lines queryable in the
 # dashboard, so latency can be reviewed stage by stage after the fact.

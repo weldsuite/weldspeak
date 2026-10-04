@@ -95,7 +95,11 @@ describe("transcriptionRequest", () => {
       input_audio: { format: "wav" },
       provider: {
         options: {
-          azure: { phraseList: { phrases: ["WeldSuite"] }, modelOptions: { transcribeStyle: "clean" } },
+          azure: {
+            phraseList: { phrases: ["WeldSuite"] },
+            // Inside enhancedMode: one level up Azure ignores it and the fillers stay in.
+            enhancedMode: { modelOptions: { transcribeStyle: "clean" } },
+          },
         },
       },
     });
@@ -132,6 +136,12 @@ describe("transcribe", () => {
     await expect(transcribe(env, pcm, { terms: [term("WeldSuite")], audioMs: 100 })).resolves.toBe("hello");
     const retried = JSON.parse(fetch.mock.calls[1]![1]!.body as string);
     expect(retried).not.toHaveProperty("provider");
+  });
+
+  it("asks for the batch model when it is the fallback behind the streaming one", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ text: "hello" }));
+    await transcribe({ ...env, STT_MODEL: `${MODEL}-streaming` }, pcm, { terms: [], audioMs: 100 });
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string).model).toBe(MODEL);
   });
 
   it("throws with the status when OpenRouter fails", async () => {

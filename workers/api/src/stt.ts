@@ -1,11 +1,10 @@
 /**
  * Batch speech-to-text: MAI-Transcribe through OpenRouter.
  *
- * MAI-Transcribe 2 has no production streaming endpoint (Microsoft's realtime
- * path, Voice Live, is a preview without an SLA), so the Durable Object keeps
- * the utterance in memory and sends it here once the hotkey is released. The
- * listening pill only ever shows a waveform, so nothing visible is lost by not
- * streaming partials.
+ * The Durable Object cuts the utterance at pauses and sends each piece here.
+ * This is the whole recognizer when `STT_MODEL` names the batch model, and
+ * the safety net behind the streaming model (see ./stt-stream.ts): when the
+ * stream cannot be opened or breaks, the same audio is transcribed here.
  *
  * What it buys over streaming Nova-3 on Workers AI: 60 languages with
  * automatic detection and code switching, and keyword biasing that works in
@@ -37,6 +36,20 @@ export function transcriptionDeadlineMs(audioMs: number): number {
 /** Whether `STT_MODEL` names a streaming Workers AI model rather than an OpenRouter one. */
 export function isWorkersAiModel(model: string): boolean {
   return model.startsWith("@cf/");
+}
+
+/** Whether `STT_MODEL` names a model that streams through Vercel AI Gateway. */
+export function isStreamingModel(model: string): boolean {
+  return !isWorkersAiModel(model) && model.endsWith("-streaming");
+}
+
+/**
+ * The batch model for `STT_MODEL`: itself, or the model a streaming one is
+ * the live version of ("microsoft/mai-transcribe-2-streaming" falls back to
+ * "microsoft/mai-transcribe-2").
+ */
+export function batchModel(model: string): string {
+  return isStreamingModel(model) ? model.slice(0, -"-streaming".length) : model;
 }
 
 /**
@@ -117,9 +130,11 @@ export interface TranscriptionOptions {
  * The OpenRouter request body.
  *
  * Keyword biasing and the transcription style are Azure's own parameters
- * (`phraseList`, `modelOptions.transcribeStyle`), passed through under
- * `provider.options.azure` under Azure's names. "clean" drops fillers and
- * false starts at the source, leaving cleanup less to do.
+ * (`phraseList`, `enhancedMode.modelOptions.transcribeStyle`), passed through
+ * under `provider.options.azure` under Azure's names. "clean" drops fillers
+ * and false starts at the source, leaving cleanup less to do. The style sits
+ * inside `enhancedMode`, as in Azure's transcription definition: one level up
+ * it is accepted and ignored, and the fillers stay in.
  */
 export function transcriptionRequest(
   model: string,
@@ -128,7 +143,7 @@ export function transcriptionRequest(
 ): Record<string, unknown> {
   const language = transcriptionLanguage(options.locale);
   const phrases = biasPhrases(options.terms);
-  const azure: Record<string, unknown> = { modelOptions: { transcribeStyle: "clean" } };
+  const azure: Record<string, unknown> = { enhancedMode: { modelOptions: { transcribeStyle: "clean" } } };
   if (phrases.length > 0) azure.phraseList = { phrases };
 
   return {
@@ -181,7 +196,7 @@ export async function transcribe(
         "Content-Type": "application/json",
         "X-Title": "WeldSpeak",
       },
-      body: JSON.stringify(transcriptionRequest(env.STT_MODEL, wav, { ...options, providerOptions })),
+      body: JSON.stringify(transcriptionRequest(batchModel(env.STT_MODEL), wav, { ...options, providerOptions })),
       signal,
     });
   };
