@@ -109,7 +109,7 @@ function extractCleanupText(response: unknown): ModelOutput | null {
 
 /**
  * Cleanup model when `CLEANUP_MODEL` is on OpenRouter and OpenRouter fails.
- * The same model, so the text reads the same whichever one answered.
+ * Workers AI has no Claude, so a failed Haiku call falls back to Gemma.
  */
 export const FALLBACK_CLEANUP_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 
