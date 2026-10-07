@@ -49,11 +49,12 @@ new_sqlite_classes = ["DictationSession"]
 
 [vars]
 APP_URL = "https://weldspeak.weldsuite.org"
-# Cleanup runs Gemma 4 26B through OpenRouter, routed to the fastest provider:
-# a median 200 ms against 860 ms for the same model on Workers AI (see
-# scripts/bench-cleanup.ts). If OpenRouter fails, the Workers AI copy answers.
-# An "@cf/..." name here runs on Workers AI only.
-CLEANUP_MODEL = "google/gemma-4-26b-a4b-it"
+# Cleanup runs Claude Haiku 5.5 through OpenRouter, routed to the fastest
+# provider, with reasoning off. If OpenRouter fails, Gemma 4 26B on Workers AI
+# answers (FALLBACK_CLEANUP_MODEL in src/format.ts).
+# An "@cf/..." name here runs on Workers AI only. To roll back to Gemma through
+# OpenRouter, set this to "google/gemma-4-26b-a4b-it".
+CLEANUP_MODEL = "anthropic/claude-haiku-5.5"
 # Speech-to-text. MAI-Transcribe 2 streamed through Vercel AI Gateway (see
 # src/stt-stream.ts): the audio is recognized while it is spoken, so release
 # waits a median 175 ms for the last words against 850 ms for a batch request

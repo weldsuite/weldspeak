@@ -514,6 +514,7 @@ export function openRouterCleanupBody(
   return {
     model,
     messages,
+    // Most Claude Haiku 5.5 providers take no temperature; OpenRouter drops it there.
     temperature: 0,
     max_tokens: maxTokens,
     reasoning: { enabled: false },

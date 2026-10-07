@@ -243,7 +243,9 @@ Without the secret, the deploy job fails and the updater feed is held back.
 
 ### Choosing the cleanup model
 
-`CLEANUP_MODEL` is `@cf/google/gemma-4-26b-a4b-it`. Cleanup works like Wispr
+`CLEANUP_MODEL` is `anthropic/claude-haiku-5.5` on OpenRouter, with reasoning
+off. If OpenRouter fails, `@cf/google/gemma-4-26b-a4b-it` on Workers AI answers
+instead. Cleanup works like Wispr
 Flow's: a literal pass that removes fillers, applies self-corrections, fixes
 punctuation and misheard words, and otherwise keeps every word, never
 condensing or answering the dictation. The focused app's name is sent as a
